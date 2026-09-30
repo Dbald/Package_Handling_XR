@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Package Handling Lab</title>
+  <meta name="description" content="VR-first WebXR package-handling training demo by Devinci Global. Built for Meta Quest 2 in Meta Quest Browser; desktop preview included.">
+  <meta name="theme-color" content="#10151b">
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three/three.module.min.js" } }
+  </script>
+  <script>
+    // Boot status: visible loading, failure messages and a retry action (PRD FR-01).
+    (function () {
+      var ready = false;
+      function $(id) { return document.getElementById(id); }
+      function fail(message, canRetry) {
+        var b = $('boot');
+        if (!b) return;
+        b.hidden = false;
+        b.dataset.state = 'error';
+        $('boot-msg').textContent = message;
+        $('boot-retry').hidden = canRetry === false;
+      }
+      window.__boot = {
+        ready: function () { ready = true; $('boot').hidden = true; },
+        fail: fail,
+        get isReady() { return ready; }
+      };
+      window.addEventListener('error', function (e) {
+        if (!ready) fail('Loading failed' + (e && e.message ? ' (' + e.message + ')' : '') + '. Check your connection and retry.', true);
+      });
+      window.addEventListener('unhandledrejection', function (e) {
+        if (!ready) fail('Loading failed (' + (e.reason && e.reason.message || e.reason) + '). Retry.', true);
+      });
+      setTimeout(function () {
+        if (!ready && $('boot').dataset.state !== 'error') {
+          $('boot-msg').textContent = 'Still loading… this is taking longer than expected on this connection.';
+          $('boot-retry').hidden = false;
+        }
+      }, 20000);
+    })();
+  </script>
+  <script type="module" src="src/main.js" onerror="__boot.fail('Could not download the training files. Check the internet connection (hotspot) and retry.', true)"></script>
+</head>
+<body data-mode="desktop">
+  <a class="skip" href="#side">Skip to training steps</a>
+  <header class="topbar">
+    <div class="brand"><strong>Devinci Global</strong><span>Package Handling Lab</span></div>
+    <p class="xr-status" id="xr-status" role="status" aria-live="polite">Checking VR support…</p>
+    <button id="enter-vr" class="btn primary" type="button" disabled>Enter VR</button>
+  </header>
+
+  <main class="layout">
+    <div id="stage" class="stage" role="img" aria-label="3D receiving workstation: inspection mat, quarantine tote on the left, scale and scanner on the right, outbound conveyor at the far right."></div>
+    <aside id="side" class="side" aria-label="Training steps" tabindex="-1">
+      <p class="kicker" id="kicker"></p>
+      <h1 id="title">Loading…</h1>
+      <div id="body" class="body"></div>
+      <div id="feedback" class="feedback" role="status" aria-live="polite" hidden></div>
+      <div id="actions" class="actions"></div>
+      <section id="help" class="help" hidden aria-labelledby="help-title">
+        <p class="kicker" id="help-kicker"></p>
+        <h2 id="help-title"></h2>
+        <div id="help-body" class="body"></div>
+        <div id="help-actions" class="actions"></div>
+      </section>
+      <section id="results" class="results" hidden aria-label="Results details"></section>
+      <p class="timer">Elapsed: <span id="timer">0:00</span> <span class="muted">(informational, pauses when hidden or paused)</span></p>
+      <p class="muted small">Keyboard: Tab / Enter for buttons · arrow keys rotate a package brought into view · H opens help.</p>
+    </aside>
+  </main>
+
+  <div id="welcome" class="overlay" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
+    <div class="card">
+      <p class="kicker">Devinci Global · Training demo</p>
+      <h1 id="welcome-title">Package Handling Lab</h1>
+      <p>Inspect two packages, decide what to accept, and process them the right way — scanning, weighing, quarantine and outbound release. Built for <strong>Meta Quest 2</strong> in Meta Quest Browser.</p>
+      <p id="welcome-xr" class="xr-msg" role="status">Checking VR support…</p>
+      <div class="row">
+        <button id="welcome-enter" class="btn primary big" type="button" disabled>Enter VR</button>
+        <button id="welcome-preview" class="btn big" type="button">Open desktop preview</button>
+      </div>
+      <p class="muted small">Seated or standing, no walking required. No account, no personal data: results stay in this browser tab. Demo rules are synthetic, not an approved operating procedure.</p>
+    </div>
+  </div>
+
+  <div id="boot" class="overlay boot" role="alert">
+    <div class="card">
+      <h1>Package Handling Lab</h1>
+      <p id="boot-msg">Loading the 3D workstation…</p>
+      <button id="boot-retry" class="btn primary" type="button" hidden onclick="location.reload()">Retry</button>
+    </div>
+  </div>
+</body>
+</html>

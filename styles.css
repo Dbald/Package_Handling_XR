@@ -1,0 +1,114 @@
+:root {
+  --bg: #0d1116;
+  --panel: #151b22;
+  --panel-2: #1c242d;
+  --text: #e8edf2;
+  --muted: #9aa7b4;
+  --accent: #e0a526;
+  --primary: #1f6fd1;
+  --danger: #8f2b2b;
+  --success: #2fae66;
+  --error: #e0762b;
+  --critical: #e04848;
+  --warning: #e0b12b;
+  --info: #4a9be0;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, Roboto, "Segoe UI", sans-serif;
+}
+
+body { display: flex; flex-direction: column; min-height: 100%; }
+
+.skip { position: absolute; left: -999px; top: 0; }
+.skip:focus { left: 8px; top: 8px; z-index: 50; background: var(--panel); padding: 8px; }
+
+.topbar {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 10px 16px; background: var(--panel); border-bottom: 3px solid var(--accent);
+}
+.brand { display: flex; flex-direction: column; line-height: 1.15; }
+.brand span { color: var(--muted); font-size: 0.9rem; }
+.xr-status { flex: 1 1 260px; margin: 0; color: var(--muted); font-size: 0.92rem; }
+.xr-status[data-state="error"], .xr-msg[data-state="error"] { color: #ffb3a3; }
+.xr-status[data-state="supported"], .xr-msg[data-state="supported"] { color: #b8f5cf; }
+
+.layout { flex: 1; display: flex; min-height: 0; }
+.stage { flex: 1; position: relative; min-width: 0; min-height: 320px; background: #3b4148; }
+.stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+.side {
+  width: 400px; max-width: 42vw; overflow-y: auto; padding: 18px 18px 24px;
+  background: var(--panel); border-left: 1px solid #252e38;
+}
+.side:focus { outline: none; }
+.kicker { margin: 0 0 4px; color: var(--muted); font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; }
+h1 { margin: 0 0 10px; font-size: 1.45rem; line-height: 1.2; }
+h2 { margin: 18px 0 8px; font-size: 1.1rem; }
+.body p { margin: 0 0 8px; }
+.body ul { margin: 0 0 8px; padding-left: 20px; }
+.muted { color: var(--muted); }
+.small { font-size: 0.85rem; }
+
+.feedback {
+  margin: 12px 0; padding: 10px 12px 10px 14px; border-radius: 8px;
+  background: var(--panel-2); border-left: 6px solid var(--info);
+}
+.feedback[data-tone="success"] { border-left-color: var(--success); }
+.feedback[data-tone="error"] { border-left-color: var(--error); }
+.feedback[data-tone="critical"] { border-left-color: var(--critical); border-left-width: 10px; }
+.feedback[data-tone="warning"] { border-left-color: var(--warning); }
+.feedback .tone-label { letter-spacing: 0.04em; }
+
+.actions { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.row .btn { flex: 1 1 0; min-width: 120px; }
+
+.btn {
+  min-height: 44px; padding: 8px 12px; border-radius: 8px; border: 1px solid #3a4652;
+  background: #2a333d; color: var(--text); font: inherit; font-weight: 600; cursor: pointer;
+}
+.btn:hover:not(:disabled) { border-color: #c9d3dd; }
+.btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn.danger { background: var(--danger); border-color: var(--danger); }
+.btn[aria-pressed="true"] { background: #3c5a2f; border-color: #7fbf66; }
+.btn[aria-pressed="true"]::before { content: "● "; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.big { min-height: 56px; font-size: 1.05rem; }
+
+.help { margin-top: 16px; padding: 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid #2c3743; }
+.results table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.results th, .results td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #2a3440; vertical-align: top; }
+.timer { margin-top: 16px; }
+
+.overlay {
+  position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px;
+  background: rgba(8, 11, 14, 0.82); overflow-y: auto;
+}
+.overlay[hidden] { display: none; }
+.card {
+  width: min(560px, 100%); padding: 24px; border-radius: 14px;
+  background: var(--panel); border-top: 4px solid var(--accent);
+}
+.card .row { margin: 16px 0; }
+.boot { z-index: 30; background: var(--bg); }
+.boot[data-state="error"] #boot-msg { color: #ffb3a3; }
+
+body[data-mode="xr"] .stage::after {
+  content: "Rendering in headset"; position: absolute; left: 12px; bottom: 12px;
+  padding: 4px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.6); font-size: 0.85rem;
+}
+
+@media (max-width: 900px) {
+  .layout { flex-direction: column; }
+  .stage { flex: none; height: 50vh; min-height: 200px; }
+  .side { width: auto; max-width: none; border-left: none; border-top: 1px solid #252e38; }
+}

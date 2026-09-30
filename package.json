@@ -1,0 +1,13 @@
+{
+  "name": "package-handling-xr",
+  "version": "1.1.0",
+  "private": true,
+  "description": "VR-first WebXR package-handling training demo (Devinci Global — Package Handling Lab).",
+  "type": "module",
+  "scripts": {
+    "start": "npx --yes http-server -c-1 -p 8080 .",
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "node tests/e2e/desktop-smoke.mjs"
+  },
+  "license": "UNLICENSED"
+}
