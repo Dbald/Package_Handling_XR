@@ -67,7 +67,8 @@ export async function startXRSession(renderer) {
     floor = false;
   }
   renderer.xr.setReferenceSpaceType(floor ? 'local-floor' : 'local');
-  renderer.xr.setFoveation(1);
+  // Fixed foveation softens the periphery; keep it light for legibility.
+  renderer.xr.setFoveation(0.5);
   await renderer.xr.setSession(session);
   return { session, floor };
 }

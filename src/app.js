@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { ProcedureEngine } from './engine.js';
 import { SCENARIO, weightRange } from './scenario.js';
 import { buildWorld, LAYOUT, PACKAGE_SIZES } from './scene.js';
+import { brandTexture } from './textures.js';
 import { Panel } from './panel.js';
 import { buildMainSpec, buildHelpSpec, markerTarget } from './guidance.js';
 import { Sfx } from './audio.js';
@@ -37,7 +38,8 @@ export class App {
     renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.xr.enabled = true;
-    renderer.xr.setFramebufferScaleFactor(1.0);
+    // Quest 2 reported smooth at 1.0; spend that headroom on sharpness.
+    renderer.xr.setFramebufferScaleFactor(1.25);
     container.appendChild(renderer.domElement);
     this.renderer = renderer;
 
@@ -59,6 +61,23 @@ export class App {
       o.renderOrder = o === this.helpPanel.mesh ? 21 : 20;
     });
     this.scene.add(this.helpPanel.mesh);
+
+    // VR entry intro: fade up from dark behind a brief title card. Nothing in
+    // the world moves, so it stays comfortable (PRD §7).
+    this.fade = new THREE.Mesh(
+      new THREE.SphereGeometry(0.4, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0x0b0e12, side: THREE.BackSide, transparent: true, depthTest: false, depthWrite: false }),
+    );
+    this.fade.renderOrder = 998;
+    this.fade.visible = false;
+    this.introTitle = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.8, 0.2),
+      new THREE.MeshBasicMaterial({ map: brandTexture(SCENARIO.org, SCENARIO.title), transparent: true, depthTest: false, depthWrite: false, toneMapped: false }),
+    );
+    this.introTitle.renderOrder = 999;
+    this.introTitle.visible = false;
+    this.scene.add(this.fade, this.introTitle);
+    this.intro = null;
 
     this.phys = {};
     this.holders = {};
@@ -688,6 +707,9 @@ export class App {
     this.engine.resume('hidden');
     this.applyFloorOffset();
     this.pendingRecenter = 3;
+    this.intro = { t: 0, placed: false };
+    this.fade.material.opacity = 1;
+    this.fade.visible = true;
     session.addEventListener('visibilitychange', () => {
       if (!this.xr) return;
       this.xr.visibility = session.visibilityState;
@@ -703,7 +725,42 @@ export class App {
     this.refreshUI();
   }
 
+  updateIntro(dt) {
+    const intro = this.intro;
+    if (!intro) return;
+    const { pos, fwd } = this.viewerPose();
+    this.fade.position.copy(pos);
+    if (!intro.placed) {
+      // Wait for the first recenter so the title appears straight ahead.
+      if (this.pendingRecenter > 0) return;
+      intro.placed = true;
+      this.introTitle.position.copy(pos).addScaledVector(fwd, 1.6);
+      this.introTitle.lookAt(pos.x, this.introTitle.position.y, pos.z);
+      this.introTitle.visible = true;
+    }
+    intro.t += dt;
+    const t = intro.t;
+    const smooth = (a, b, x) => {
+      const k = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1);
+      return k * k * (3 - 2 * k);
+    };
+    this.introTitle.material.opacity = smooth(0, 0.4, t) * (1 - smooth(1.2, 1.7, t));
+    this.fade.material.opacity = 1 - smooth(0.9, 2.2, t);
+    if (t >= 2.2) {
+      this.fade.visible = false;
+      this.introTitle.visible = false;
+      this.intro = null;
+    }
+  }
+
+  endIntro() {
+    this.intro = null;
+    this.fade.visible = false;
+    this.introTitle.visible = false;
+  }
+
   onXREnd() {
+    this.endIntro();
     for (const c of this.xrInput.controllers) if (c.held) this.freezeHeld(c, 'disconnect');
     this.xr = null;
     this.engine.resume('hidden');
@@ -938,6 +995,7 @@ export class App {
     if (this.xr) {
       if (this.pendingRecenter > 0 && --this.pendingRecenter === 0) this.recenter();
       this.xrInput.update(dt, xrFrame);
+      this.updateIntro(dt);
     } else {
       this.desktop.update(dt);
     }

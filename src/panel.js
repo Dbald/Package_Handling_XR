@@ -105,16 +105,19 @@ export function wrapText(ctx, text, maxWidth) {
 const FONT = 'system-ui, -apple-system, Roboto, "Segoe UI", sans-serif';
 
 export class Panel {
-  constructor({ width = 1.3, height = 0.86, pxPerMeter = 1000, name = 'panel' } = {}) {
+  constructor({ width = 1.3, height = 0.86, pxPerMeter = 1000, supersample = 1.5, name = 'panel' } = {}) {
+    // Layout works in logical px (1 px = 1 mm); the canvas is supersampled so
+    // text stays crisp in the headset.
     this.w = Math.round(width * pxPerMeter);
     this.h = Math.round(height * pxPerMeter);
+    this.ss = supersample;
     this.canvas = document.createElement('canvas');
-    this.canvas.width = this.w;
-    this.canvas.height = this.h;
+    this.canvas.width = Math.round(this.w * supersample);
+    this.canvas.height = Math.round(this.h * supersample);
     this.ctx = this.canvas.getContext('2d');
     this.texture = new THREE.CanvasTexture(this.canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
-    this.texture.anisotropy = 4;
+    this.texture.anisotropy = 8;
     const mat = new THREE.MeshBasicMaterial({ map: this.texture, toneMapped: false });
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height), mat);
     this.mesh.name = name;
@@ -162,6 +165,7 @@ export class Panel {
   draw(spec) {
     const { ctx, w, h } = this;
     const pad = 36;
+    ctx.setTransform(this.ss, 0, 0, this.ss, 0, 0);
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = '#10151b';
     ctx.fillRect(0, 0, w, h);

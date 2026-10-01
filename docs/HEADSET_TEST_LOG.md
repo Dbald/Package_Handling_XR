@@ -66,3 +66,26 @@ Record frame timing with the Meta Quest Developer Hub / OVR Metrics Tool.
 | 5 | | | | |
 
 Proposed gate: ≥ 4 of 5 complete both paths without intervention.
+
+---
+
+## Session 1: first headset run (Oct 1, 2026, Devin, Quest 2, Meta Quest Browser)
+
+**Worked**
+- Loaded from the hosted HTTPS link. Enter VR showed the browser's immersive prompt, Allow went straight into the scene.
+- Smooth frame rate (subjective, not yet measured with OVR Metrics).
+- Panel text easy to read. Some softness, partly from the headset lenses.
+- Grab, hold and rotate feel natural. Box textures look good. Quarantine and scan interactions work well.
+- Setup controls (seated/standing, bench lower/higher, recenter) put the bench in the right spot. No need to move around the room.
+
+**Issues → fixes (next commit)**
+| Observation | Fix |
+|---|---|
+| Wanted sharper text and visuals | Framebuffer scale 1.0 → 1.25, fixed foveation 1 → 0.5, world panels drawn at 1.5× resolution, 8× anisotropic filtering. **Re-check frame rate.** |
+| Quarantine "Hold for review" sign flickered against its post (same plane) | Sign moved 1.5 cm in front of the post |
+| Outbound sign post stood in the middle of the conveyor | Post moved beside the belt, so the belt is clear |
+| Jump into VR felt abrupt | Fade-in from dark with a short title card (about 2 s). The world itself does not move, for comfort. |
+
+**Still to record:** OS and browser versions, full §12 checklist, a measured 5-minute frame-timing run.
+
+**Product feedback:** real parcel hubs work a sort-and-load flow: packages come down a ramp, a handheld scanner gives the destination, and the worker loads a trailer next to a coworker. Proposed as the next scenario (see session notes).

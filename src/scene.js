@@ -180,7 +180,7 @@ export function buildWorld(scenario) {
   tote.add(toteLabel);
   const toteSign = labelPlane(textTexture(['QUARANTINE', { text: 'Hold for review', font: '30px system-ui' }],
     { w: 512, h: 170, font: 'bold 70px system-ui', bg: '#1a1a1a', fg: '#ffd23f', stripe: '#ffd23f' }), 0.34, 0.115);
-  toteSign.position.set(0, 0.36, -T.d / 2 - 0.02);
+  toteSign.position.set(0, 0.36, -T.d / 2 - 0.005); // in front of the post (post front face at -T.d/2 - 0.02)
   tote.add(toteSign);
   tote.add(box(0.02, 0.36, 0.02, steel, 0, 0.18, -T.d / 2 - 0.03));
   station.add(tote);
@@ -251,9 +251,11 @@ export function buildWorld(scenario) {
   }
   const intakeMarker = labelPlane(textTexture(['OUTBOUND', { text: 'accepted + verified only', font: '26px system-ui' }],
     { w: 512, h: 150, font: 'bold 60px system-ui', bg: '#133d28', fg: '#e9fff2' }), 0.34, 0.1);
-  intakeMarker.position.set(C.x, 0.34, C.intakeZ - 0.3);
+  // Sign stands on its own post beside the belt so nothing obstructs the conveyor.
+  const signX = C.x + C.w / 2 + 0.09;
+  intakeMarker.position.set(signX, 0.36, C.intakeZ - 0.3);
   conveyor.add(intakeMarker);
-  conveyor.add(box(0.02, 0.36, 0.02, steel, C.x, 0.17, C.intakeZ - 0.32));
+  conveyor.add(box(0.025, 1.7, 0.025, steel, signX, -0.54, C.intakeZ - 0.32));
   station.add(conveyor);
 
   // Physical release control on a pedestal beside the conveyor.
