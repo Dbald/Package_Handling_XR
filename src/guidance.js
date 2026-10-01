@@ -2,6 +2,7 @@
 // in-VR panel and the HTML desktop fallback render the same content and the
 // same action ids — one source for input parity (PRD FR-12).
 import { SCENARIO, weightRange } from './scenario.js';
+import { PACK_SCENARIO, packWeightRange } from './pack/scenario.js';
 
 const fmtTime = (ms) => {
   const s = Math.floor(ms / 1000);
@@ -89,12 +90,14 @@ function stepText(key, state, { vr }) {
  * }
  */
 export function buildMainSpec(view) {
-  const { engine } = view;
-  if (engine.isPaused()) return buildPauseSpec(view);
-  switch (engine.phase) {
+  const { session } = view;
+  if (session.isPaused()) return buildPauseSpec(view);
+  switch (session.phase) {
     case 'setup': return buildSetupSpec(view);
-    case 'briefing': return buildBriefingSpec(view);
-    case 'complete': return buildResultsSpec(view);
+    case 'briefing': return buildSessionBriefingSpec(view);
+    case 'pack': return session.pack.isComplete() ? buildPackDoneSpec(view) : buildPackSpec(view);
+    case 'dock-briefing': return buildBriefingSpec(view);
+    case 'complete': return buildSessionResultsSpec(view);
     default: return buildExerciseSpec(view);
   }
 }
@@ -135,8 +138,8 @@ function buildSetupSpec(view) {
 
 function buildBriefingSpec(view) {
   return {
-    kicker: `${SCENARIO.org} · Briefing`,
-    title: 'Receiving procedure (demo rules)',
+    kicker: 'Station 2 · Dock Check · Briefing',
+    title: 'Check packages before they ship',
     bodySize: 29,
     body: [
       ...SCENARIO.rules.map((r) => ({ text: r, bullet: true })),
@@ -149,8 +152,7 @@ function buildBriefingSpec(view) {
 }
 
 function buildPauseSpec(view) {
-  const { engine } = view;
-  const reasons = [...engine.pauseReasons];
+  const reasons = [...view.session.pauseReasons];
   const lines = [];
   if (reasons.includes('input')) lines.push('A controller disconnected. Any package you were holding is frozen in place.');
   if (reasons.includes('xr-visibility')) lines.push('The headset view was interrupted (system menu or tracking loss).');
@@ -225,50 +227,11 @@ function buildExerciseSpec(view) {
   };
 }
 
-export function buildResultsSpec(view) {
-  const r = view.engine.results();
-  const tone = r.status === 'proficient' ? '#2fae66' : '#e0b12b';
-  const mark = (c) => (c.status === 'passed' ? 'PASS' : c.corrected ? 'MISS, corrected' : 'MISS');
-  const details = view.resultsPage === 'details';
-  const summary = [
-    { text: `Score: ${r.score} / ${r.maxScore} (first attempts)`, bold: true, size: 34 },
-    {
-      text: r.criticalErrors.length
-        ? `Critical errors: ${r.criticalErrors.length} — ${r.criticalErrors.map((c) => c.label).join('; ')}`
-        : 'Critical errors: none',
-      color: r.criticalErrors.length ? '#ff9b9b' : '#b8f5cf',
-    },
-    `Corrections made: ${r.corrections}   ·   Time: ${fmtTime(r.elapsedMs)} (informational, no speed bonus)`,
-    { text: `Demo threshold: ≥ ${r.threshold.minScore} and zero critical errors (pending instructional validation).`, color: '#9aa7b4', size: 24 },
-  ];
-  const stageLines = ['A', 'B'].map((k) => {
-    const cps = r.checkpoints.filter((c) => c.pkg === k);
-    const got = cps.filter((c) => c.status === 'passed').reduce((a, c) => a + c.points, 0);
-    const max = cps.reduce((a, c) => a + c.points, 0);
-    const missed = cps.filter((c) => c.status !== 'passed').map((c) => c.label);
-    return { text: `${SCENARIO.packages[k].label}: ${got}/${max}${missed.length ? ` — review: ${missed.join('; ')}` : ' — all first attempts correct'}`, size: 26 };
-  });
-  const body = details
-    ? r.checkpoints.map((c) => ({ text: `[${mark(c)}] ${c.label}${c.note && c.status !== 'passed' ? ` — ${c.note}` : ''}`, size: 23, color: c.status === 'passed' ? '#dbe2ea' : '#ffd29b' }))
-    : [...summary, { gap: 6 }, ...stageLines];
-  return {
-    kicker: `Results · ${r.complete ? 'session complete' : 'in progress'}`,
-    title: r.statusLabel,
-    titleSize: 44,
-    accent: tone,
-    bodySize: 28,
-    body,
-    buttons: [[
-      { id: details ? 'results:summary' : 'results:details', label: details ? 'Summary' : 'Checkpoint details' },
-      { id: 'help', label: 'Help' },
-      { id: 'replay', label: 'Replay', variant: 'primary' },
-    ]],
-  };
-}
-
 export function buildHelpSpec(view) {
   const { settings, vr } = view;
-  const controls = vr ? SCENARIO.controls.vr : SCENARIO.controls.desktop;
+  const controls = vr ? [...SCENARIO.controls.vr, 'Scanner and tape gun: pick up, aim, pull TRIGGER to use.'] : SCENARIO.controls.desktop;
+  const atPack = view.session.stationKey === 'pack';
+  const rules = atPack ? PACK_SCENARIO.rules.slice(0, 3) : SCENARIO.rules.slice(1, 3);
   return {
     kicker: 'Help · training is paused while this is open',
     title: 'Controls, rules & settings',
@@ -277,7 +240,7 @@ export function buildHelpSpec(view) {
       { text: 'Controls', bold: true, size: 27 },
       ...controls.map((c) => ({ text: c, bullet: true, size: 24 })),
       { text: 'Rules', bold: true, size: 27 },
-      ...SCENARIO.rules.slice(1, 3).map((c) => ({ text: c, bullet: true, size: 24 })),
+      ...rules.map((c) => ({ text: c, bullet: true, size: 24 })),
     ],
     buttons: [
       ...comfortRows(view),
@@ -292,5 +255,169 @@ export function buildHelpSpec(view) {
       ],
     ],
     buttonHeight: 68,
+  };
+}
+
+// ------------------------------------------------------------ two-station flow
+
+function buildSessionBriefingSpec(view) {
+  return {
+    kicker: `${SCENARIO.org} · Shift briefing`,
+    title: 'Two stations, one order journey',
+    bodySize: 28,
+    body: [
+      { text: 'Station 1 · Pack-Out: pack a customer order correctly and send it to the dock.', bold: true },
+      ...PACK_SCENARIO.rules.map((r) => ({ text: r, bullet: true, size: 25 })),
+      { text: 'Station 2 · Dock Check: inspect outgoing packages before they are loaded.', bold: true },
+      { text: 'Synthetic demo rules. Scored on first attempts; mistakes can be corrected but stay on the record.', color: '#9aa7b4', size: 23 },
+    ],
+    feedback: view.feedback,
+    buttons: [[
+      { id: 'help', label: 'Controls & help' },
+      { id: 'station:skip', label: 'Skip to Station 2 (demo)' },
+      { id: 'station:pack', label: 'Start Station 1', variant: 'primary' },
+    ]],
+  };
+}
+
+const PACK_STEPS = ['open', 'scan', 'exception', 'carton', 'pack', 'dunnage', 'seal', 'weigh', 'print', 'label', 'outbound', 'release'];
+
+function packStepText(step, vr) {
+  const { min, max } = packWeightRange();
+  const t = {
+    open: ['Open the order', vr
+      ? 'Pick up the handheld scanner (front left). Aim the red beam at the tote label and pull TRIGGER.'
+      : 'Select Scan tote. The order opens on the monitor (right).'],
+    scan: ['Scan each item', vr
+      ? 'Scan every item in the tote and compare it with the order on the monitor.'
+      : 'Choose an item with the Item button, then Scan item. Compare with the monitor.'],
+    exception: ['Divert the extra item', 'One item is NOT on this order. Put it in the yellow EXCEPTION bin; never pack it.'],
+    carton: ['Choose a carton', vr
+      ? 'Take the smallest carton that fits everything from the slots at the back and set it on the pack scale.'
+      : 'Pick the smallest carton that fits everything (inside sizes are on the slot labels).'],
+    pack: ['Pack the order', vr ? 'Place each order item into the carton.' : 'Select an order item, then Pack in carton.'],
+    dunnage: ['Protect the fragile item', vr ? 'Take air pillows from the VOID FILL basket and drop them into the carton.' : 'Select Add void fill.'],
+    seal: ['Seal the carton', vr ? 'Pick up the tape gun, hold it over the carton and pull TRIGGER.' : 'Select Seal carton.'],
+    weigh: ['Confirm the weight', `Read the pack scale. Expected ${min.toFixed(2)} – ${max.toFixed(2)} kg. Is the weight within range?`],
+    print: ['Print the shipping label', vr ? 'Select Print label, or point at the label printer and pull TRIGGER.' : 'Select Print label.'],
+    label: ['Apply the label', vr ? 'Take the label from the printer and place it on top of the carton.' : 'Select Apply label.'],
+    outbound: ['Send it outbound', vr ? 'Place the carton on the OUTBOUND roller conveyor (right).' : 'Select Place on outbound.'],
+    release: ['Confirm release', 'Select Confirm release here or press the green button beside the conveyor.'],
+  }[step] ?? ['Pack-Out', ''];
+  return { title: t[0], body: [t[1]] };
+}
+
+function chunk(list, n) {
+  const rows = [];
+  for (let i = 0; i < list.length; i += n) rows.push(list.slice(i, i + n));
+  return rows;
+}
+
+export function buildPackSpec(view) {
+  const e = view.session.pack;
+  const st = view.packStation;
+  const step = e.step();
+  const idx = PACK_STEPS.indexOf(step) + 1;
+  const { title, body } = packStepText(step, view.vr);
+  const S = PACK_SCENARIO;
+  const decision = [];
+  if (!e.carton) S.cartonOrder.forEach((k) => decision.push({ id: `pk:carton:${k}`, label: `Carton ${k}` }));
+  if (e.sealed && !e.weightConfirmed) {
+    decision.push({ id: 'pk:weight:within', label: 'Weight IN range', variant: 'primary' });
+    decision.push({ id: 'pk:weight:outside', label: 'Weight OUT of range', variant: 'primary' });
+  }
+  const itemRow = [];
+  const selectable = st.selectableItems();
+  if (!e.sealed && selectable.length) {
+    itemRow.push({ id: 'pk:select', label: `Item: ${S.items[st.selected].name} ▸` });
+    itemRow.push({ id: 'pk:scan:item', label: 'Scan item' });
+    itemRow.push({ id: 'pk:pack', label: 'Pack in carton' });
+    itemRow.push({ id: 'pk:divert', label: 'To exception bin' });
+  }
+  const tools = [];
+  if (!e.orderOpen) tools.push({ id: 'pk:scan:tote', label: 'Scan tote', variant: 'primary' });
+  if (e.carton && !e.sealed) {
+    tools.push({ id: 'pk:dunnage', label: 'Add void fill' });
+    tools.push({ id: 'pk:seal', label: 'Seal carton' });
+  }
+  if (e.sealed && !e.labelPrinted) tools.push({ id: 'pk:print', label: 'Print label' });
+  if (e.labelPrinted && !e.labelApplied) tools.push({ id: 'pk:apply', label: 'Apply label' });
+  if (e.labelApplied && !e.staged) tools.push({ id: 'pk:outbound', label: 'Place on outbound' });
+  if (st.floorItems().length) tools.push({ id: 'pk:retrieve', label: 'Retrieve items', variant: 'primary' });
+  const last = [{ id: 'help', label: 'Help / Pause' }];
+  if (e.carton) last.push({ id: 'release', label: 'Confirm release', variant: e.staged ? 'primary' : 'default' });
+  return {
+    kicker: `Station 1 · Pack-Out · ${S.order.id} · Step ${idx} of ${PACK_STEPS.length}`,
+    title,
+    body,
+    feedback: view.feedback,
+    buttons: [decision, itemRow, ...chunk(tools, 4), last],
+    buttonHeight: 64,
+  };
+}
+
+function buildPackDoneSpec(view) {
+  const r = view.session.pack.results();
+  return {
+    kicker: 'Station 1 · Pack-Out · complete',
+    title: 'Order packed and released',
+    accent: r.status === 'proficient' ? '#2fae66' : '#e0b12b',
+    body: [
+      { text: `Station 1 score: ${r.score} / ${r.maxScore} (first attempts)`, bold: true, size: 34 },
+      r.criticalErrors.length
+        ? { text: `Critical errors: ${r.criticalErrors.map((c) => c.label).join('; ')}`, color: '#ff9b9b' }
+        : { text: 'Critical errors: none', color: '#b8f5cf' },
+      { gap: 8 },
+      'Next: Station 2 · Dock Check. You will inspect outgoing packages before they are loaded.',
+    ],
+    feedback: view.feedback,
+    buttons: [[{ id: 'help', label: 'Help' }, { id: 'station:dock', label: 'Continue to Station 2', variant: 'primary' }]],
+  };
+}
+
+export function buildSessionResultsSpec(view) {
+  const r = view.session.results();
+  const page = view.resultsPage;
+  const mark = (c) => (c.status === 'passed' ? 'PASS' : c.corrected ? 'MISS, corrected' : 'MISS');
+  const station = r.stations.find((s) => s.key === page);
+  let body;
+  if (station) {
+    body = [
+      { text: `Station ${station.number} · ${station.name}: ${station.results.score}/${station.results.maxScore}${station.skipped ? ' (skipped)' : ''}`, bold: true, size: 28 },
+      ...station.results.checkpoints.map((c) => ({
+        text: `[${mark(c)}] ${c.label}${c.note && c.status !== 'passed' ? ` — ${c.note}` : ''}`,
+        size: 22, color: c.status === 'passed' ? '#dbe2ea' : '#ffd29b',
+      })),
+    ];
+  } else {
+    body = [
+      { text: `Total: ${r.score} / ${r.maxScore} (first attempts)`, bold: true, size: 34 },
+      ...r.stations.map((s) => ({
+        text: `Station ${s.number} · ${s.name}: ${s.skipped ? 'skipped' : `${s.results.score}/${s.results.maxScore} — ${s.results.statusLabel}`}`,
+        size: 28,
+      })),
+      {
+        text: r.criticalErrors.length
+          ? `Critical errors: ${r.criticalErrors.map((c) => `S${c.station}: ${c.label}`).join('; ')}`
+          : 'Critical errors: none',
+        color: r.criticalErrors.length ? '#ff9b9b' : '#b8f5cf',
+      },
+      `Time: ${fmtTime(r.elapsedMs)} (informational, no speed bonus)`,
+      { text: 'Demo threshold per station: ≥ 80 and zero critical errors (pending instructional validation).', color: '#9aa7b4', size: 23 },
+    ];
+  }
+  const nav = [
+    page !== 'summary' ? { id: 'results:summary', label: 'Summary' } : null,
+    page !== 'pack' ? { id: 'results:pack', label: 'Station 1 details' } : null,
+    page !== 'dock' ? { id: 'results:dock', label: 'Station 2 details' } : null,
+  ].filter(Boolean);
+  return {
+    kicker: 'Results · session complete',
+    title: r.statusLabel,
+    titleSize: 44,
+    accent: r.status === 'proficient' ? '#2fae66' : '#e0b12b',
+    bodySize: 28,
+    body,
+    buttons: [nav, [{ id: 'help', label: 'Help' }, { id: 'replay', label: 'Replay', variant: 'primary' }]],
   };
 }

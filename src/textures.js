@@ -297,3 +297,10 @@ export function brandTexture(title, subtitle) {
   ctx.fillText(subtitle, 48, 196);
   return toTexture(c);
 }
+
+/** Generic helper: draw into a fresh canvas and return an sRGB texture. */
+export function canvasTexture(w, h, draw, opts) {
+  const [c, ctx] = canvas(w, h);
+  draw(ctx, w, h);
+  return toTexture(c, opts);
+}

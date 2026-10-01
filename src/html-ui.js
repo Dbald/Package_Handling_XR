@@ -156,28 +156,33 @@ export class HtmlUI {
   renderResults(r) {
     const res = $('results');
     res.replaceChildren();
-    res.append(el('h2', {}, 'Checkpoint record'));
-    const table = el('table');
-    const head = el('tr');
-    ['Checkpoint', 'First attempt', 'Points', 'Note'].forEach((h) => head.append(el('th', { scope: 'col' }, h)));
-    const thead = el('thead');
-    thead.append(head);
-    table.append(thead);
-    const tb = el('tbody');
-    for (const c of r.checkpoints) {
-      const tr = el('tr');
-      tr.append(
-        el('td', {}, c.label),
-        el('td', {}, c.status === 'passed' ? 'Pass' : c.corrected ? 'Miss (corrected)' : 'Miss'),
-        el('td', {}, `${c.status === 'passed' ? c.points : 0}/${c.points}`),
-        el('td', {}, c.status === 'passed' ? '' : c.note ?? ''),
-      );
-      tb.append(tr);
+    for (const st of r.stations) {
+      const sr = st.results;
+      res.append(el('h2', {}, `Station ${st.number} · ${st.name}: ${st.skipped ? 'skipped' : `${sr.score}/${sr.maxScore} — ${sr.statusLabel}`}`));
+      if (st.skipped) continue;
+      const table = el('table');
+      const head = el('tr');
+      ['Checkpoint', 'First attempt', 'Points', 'Note'].forEach((h) => head.append(el('th', { scope: 'col' }, h)));
+      const thead = el('thead');
+      thead.append(head);
+      table.append(thead);
+      const tb = el('tbody');
+      for (const c of sr.checkpoints) {
+        const tr = el('tr');
+        tr.append(
+          el('td', {}, c.label),
+          el('td', {}, c.status === 'passed' ? 'Pass' : c.corrected ? 'Miss (corrected)' : 'Miss'),
+          el('td', {}, `${c.status === 'passed' ? c.points : 0}/${c.points}`),
+          el('td', {}, c.status === 'passed' ? '' : c.note ?? ''),
+        );
+        tb.append(tr);
+      }
+      table.append(tb);
+      res.append(table);
     }
-    table.append(tb);
-    res.append(table);
+    const modes = [...new Set(r.stations.flatMap((s) => s.results.inputModes))];
     res.append(el('p', { class: 'muted' },
-      `Session ${r.sessionId.slice(0, 8)} · scenario v${r.scenarioVersion} · input used: ${r.inputModes.join(', ') || 'n/a'}. ` +
+      `Session total ${r.score}/${r.maxScore} · input used: ${modes.join(', ') || 'n/a'}. ` +
       'Results live in this browser tab only; refreshing starts a new session.'));
   }
 }

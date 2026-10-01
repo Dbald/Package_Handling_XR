@@ -61,13 +61,46 @@ try {
     await page.click(sel);
   };
   const results = () => page.evaluate(() => globalThis.__app.engine.results());
+  const sessionResults = () => page.evaluate(() => globalThis.__app.session.results());
   const state = (k) => page.evaluate((key) => globalThis.__app.engine.packageState(key), k);
+  const settle = () => page.waitForFunction(() => !globalThis.__app.transition, null, { timeout: 5000 });
 
   await shot('02-setup');
   await act('posture:seated');
   await act('posture:standing');
   await act('continue');
   await shot('03-briefing');
+
+  // Station 1 · Pack-Out, perfect run via the accessible buttons.
+  await act('station:pack');
+  await shot('03a-pack-start');
+  await act('pk:scan:tote');
+  await act('pk:scan:item'); // mug (selected first)
+  await act('pk:select');
+  await act('pk:scan:item'); // book
+  await act('pk:select');
+  await act('pk:scan:item'); // phone case → not on order
+  await shot('03b-pack-scanned');
+  await act('pk:divert');
+  await act('pk:carton:M');
+  await act('pk:pack'); // mug
+  await act('pk:pack'); // book
+  await act('pk:dunnage');
+  await act('pk:dunnage');
+  await act('pk:seal');
+  await page.waitForTimeout(300);
+  await shot('03c-pack-sealed');
+  await act('pk:weight:within');
+  await act('pk:print');
+  await act('pk:apply');
+  await act('pk:outbound');
+  await act('release');
+  const pr = await page.evaluate(() => globalThis.__app.session.pack.results());
+  assert.equal(pr.score, 100, 'perfect pack-out scores 100');
+  assert.equal(pr.status, 'proficient');
+  await shot('03d-pack-done');
+  await act('station:dock');
+  await settle();
   await act('start');
   await act('assist:bring');
   await page.waitForTimeout(600);
@@ -90,13 +123,16 @@ try {
   await act('release');
   await page.waitForTimeout(400);
   let r = await results();
-  assert.equal(r.score, 100, 'perfect run scores 100');
+  assert.equal(r.score, 100, 'perfect dock run scores 100');
   assert.equal(r.status, 'proficient');
   assert.equal(r.criticalErrors.length, 0);
+  const sr = await sessionResults();
+  assert.equal(sr.score, 200);
+  assert.equal(sr.status, 'proficient');
   assert.ok(await page.isVisible('#results table'), 'results table shown');
   assert.match(await page.textContent('#title'), /proficiency met/);
   await shot('07-results');
-  await act('results:details');
+  await act('results:pack');
   await shot('08-results-details');
 
   // Replay, then an error-path run.
@@ -105,7 +141,11 @@ try {
   assert.equal(r.score, 0);
   assert.equal(await state('A'), 'waiting');
   assert.equal(await page.evaluate(() => globalThis.__app.engine.log.length), 0);
+  assert.equal(await page.evaluate(() => globalThis.__app.session.pack.log.length), 0);
+  assert.equal(await page.evaluate(() => globalThis.__app.stationKey), 'pack');
   await act('continue');
+  await act('station:skip'); // demo shortcut straight to Station 2
+  await settle();
   await act('start');
   await act('assist:bring');
   await act('condition:damaged');
@@ -136,6 +176,9 @@ try {
   assert.equal(r.status, 'practice');
   assert.equal(r.criticalErrors.length, 2);
   assert.equal(r.score, 70);
+  const sr2 = await sessionResults();
+  assert.equal(sr2.status, 'incomplete', 'skipping Station 1 never passes');
+  assert.match(await page.textContent('#title'), /Station 1 skipped/);
 
   // Narrow / zoomed layout stays usable (1280×720 at 200% ≈ 640×360 CSS px).
   await page.setViewportSize({ width: 640, height: 360 });
@@ -150,6 +193,10 @@ try {
   await vrLogic(browser, errors);
   assert.deepEqual(errors, [], `page errors:\n${errors.join('\n')}`);
   console.log('vr interaction logic (simulated controllers): OK');
+
+  await vrPackLogic(browser, errors);
+  assert.deepEqual(errors, [], `page errors:\n${errors.join('\n')}`);
+  console.log('station 1 pack-out VR logic (simulated controllers): OK');
 } catch (err) {
   failed = true;
   console.error(err);
@@ -201,7 +248,10 @@ async function vrLogic(browser, errors) {
   await grip(L.mat.x, 0.12, L.mat.z);
   assert.equal(await ev(() => globalThis.__squeeze()), null);
   await act('continue');
+  await act('station:skip');
+  await page.waitForFunction(() => !globalThis.__app.transition);
   await act('start');
+  await grip(L.mat.x, 0.12, L.mat.z); // the world moved to Station 2: re-place the hand
 
   // Package A: grab → inspect → reject → drop into the quarantine tote.
   assert.equal(await ev(() => globalThis.__squeeze()), 'A');
@@ -305,18 +355,178 @@ async function vrLogic(browser, errors) {
   assert.equal(r.score, 80);
   assert.equal(r.status, 'practice', 'premature release stays on the record');
 
-  // Replay, start, then exit VR midway: paused, never complete or passing.
+  // Replay, start Station 1, then exit VR midway: paused, never complete or passing.
   await act('replay');
   await act('continue');
-  await act('start');
+  await act('station:pack');
   await ev(() => globalThis.__app.xr.session.end());
   const after = await ev(() => ({
-    paused: [...globalThis.__app.engine.pauseReasons],
-    res: globalThis.__app.engine.results(),
+    paused: [...globalThis.__app.session.pack.pauseReasons],
+    res: globalThis.__app.session.results(),
     xr: globalThis.__app.xr,
   }));
   assert.deepEqual(after.paused, ['xr-exit']);
   assert.equal(after.res.status, 'incomplete');
   assert.equal(after.xr, null);
+  await page.close();
+}
+
+// ---------------------------------------------------------------------------
+// Station 1 with a simulated controller: handheld scanner aimed by the ray,
+// items carried to the carton / exception bin, void fill, tape gun, label and
+// conveyor. Exercises the real interaction code, not WebXR rendering.
+async function vrPackLogic(browser, errors) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  page.on('pageerror', (e) => errors.push(`pageerror(pack): ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(`console(pack): ${m.text()}`); });
+  await page.goto(base);
+  await page.waitForFunction(() => globalThis.__boot?.isReady, null, { timeout: 30000 });
+  await page.evaluate(() => {
+    const app = globalThis.__app;
+    app.settings.reducedMotion = true;
+    app.xr = { session: { end: async () => app.onXREnd() }, floor: true, visibility: 'visible' };
+    const c = app.xrInput.controllers[0];
+    c.connected = true;
+    c.source = { targetRayMode: 'tracked-pointer', handedness: 'right', gamepad: null };
+    c.grip.visible = true;
+    const V = c.grip.position.constructor;
+    const Q = c.grip.quaternion.constructor;
+    const M = c.grip.matrix.constructor;
+    const toWorld = (x, y, z) => app.pack.group.localToWorld(new V(x, y, z));
+    globalThis.__g = (x, y, z) => {
+      c.grip.matrix.compose(toWorld(x, y, z), new Q(), new V(1, 1, 1));
+      c.grip.updateMatrixWorld(true);
+    };
+    // Ray at (x,y,z) pointing toward (tx,ty,tz), all in Station 1 coordinates.
+    globalThis.__aim = (x, y, z, tx, ty, tz) => {
+      const eye = toWorld(x, y, z);
+      const m = new M().lookAt(eye, toWorld(tx, ty, tz), new V(0, 1, 0));
+      const q = new Q().setFromRotationMatrix(m);
+      c.ray.matrix.compose(eye, q, new V(1, 1, 1));
+      c.ray.updateMatrixWorld(true);
+    };
+    globalThis.__sq = () => { c.near = app.xrInput.nearest(c); app.xrInput.onSqueeze(c); return c.held; };
+    globalThis.__let = () => app.xrInput.onSqueezeEnd(c);
+    globalThis.__trig = () => app.xrInput.onSelect(c);
+  });
+  const L = await page.evaluate(async () => (await import('./src/pack/scene.js')).PACK_LAYOUT);
+  const ev = (fn, ...a) => page.evaluate(fn, ...a);
+  const g = (x, y, z) => ev(([a, b, c]) => globalThis.__g(a, b, c), [x, y, z]);
+  const aim = (...a) => ev((args) => globalThis.__aim(...args), a);
+  const sq = () => ev(() => globalThis.__sq());
+  const let_ = () => ev(() => globalThis.__let());
+  const trig = () => ev(() => globalThis.__trig());
+  const pe = (fn) => ev(`(${fn})(globalThis.__app.session.pack)`);
+  const act = (id) => ev((i) => globalThis.__app.dispatch(i, 'xr'), id);
+  const T = L.tote;
+  const P = L.packZone;
+
+  await act('continue');
+  await act('station:pack');
+
+  // Scanner: grab, aim at the tote label, trigger → order opens.
+  await g(L.scanner.x, 0.025, L.scanner.z);
+  assert.equal(await sq(), 'pk:scanner');
+  const lblY = T.h * 0.55;
+  await aim(T.x, lblY + 0.03, T.z + 0.5, T.x, lblY + 0.03, T.z + T.d / 2);
+  await trig();
+  assert.equal(await pe((e) => e.orderOpen), true, 'tote scan opens the order');
+
+  // Mug barcode faces the learner: aim from above-front.
+  const mug = [T.x - 0.1, 0.08, T.z - 0.04];
+  await aim(mug[0], 0.38, T.z + 0.32, mug[0], 0.1, mug[2] + 0.06);
+  await trig();
+  assert.equal(await pe((e) => e.items.mug.scanned), true, 'mug scanned');
+  // The phone case lies on the book; its barcode is on top.
+  const caseP = [T.x + 0.07, 0.0565, T.z + 0.02];
+  await aim(caseP[0], 0.42, caseP[2] + 0.06, caseP[0], caseP[1], caseP[2]);
+  await trig();
+  assert.equal(await pe((e) => e.items.case.scanned), true, 'case scanned (flagged not on order)');
+  await let_(); // scanner returns to its spot
+
+  // Case → exception bin.
+  await g(...caseP);
+  assert.equal(await sq(), 'pk:case');
+  await g(L.exception.x, 0.25, L.exception.z);
+  await let_();
+  assert.equal(await pe((e) => e.items.case.loc), 'exception');
+
+  // Book barcode on top: scan from above.
+  await g(L.scanner.x, 0.025, L.scanner.z);
+  assert.equal(await sq(), 'pk:scanner');
+  const book = [T.x + 0.07, 0.04, T.z + 0.04];
+  await aim(book[0] + 0.03, 0.4, book[2] + 0.08, book[0] + 0.03, book[1], book[2]);
+  await trig();
+  assert.equal(await pe((e) => e.items.book.scanned), true, 'book scanned');
+  await let_();
+
+  // Carton M from its slot onto the pack scale.
+  await g(L.slots.xs.M, 0.081, L.slots.z);
+  assert.equal(await sq(), 'pk:carton-M');
+  await g(P.x, 0.2, P.z);
+  await let_();
+  assert.equal(await pe((e) => e.carton), 'M');
+
+  // Pack both order items.
+  await g(...mug);
+  assert.equal(await sq(), 'pk:mug');
+  await g(P.x, 0.25, P.z);
+  await let_();
+  await g(...book);
+  assert.equal(await sq(), 'pk:book');
+  await g(P.x, 0.25, P.z);
+  await let_();
+  assert.equal(await pe((e) => e.items.mug.loc + e.items.book.loc), 'boxbox');
+
+  // Two air pillows.
+  for (let i = 0; i < 2; i++) {
+    await g(L.basket.x, 0.085, L.basket.z);
+    assert.equal(await sq(), 'pk:pillow');
+    await g(P.x, 0.3, P.z);
+    await let_();
+  }
+  assert.equal(await pe((e) => e.dunnage), 2);
+
+  // Tape gun: too far → hint; over the carton → sealed.
+  await g(L.tape.x, 0.05, L.tape.z);
+  assert.equal(await sq(), 'pk:tape');
+  await aim(P.x + 0.6, 0.6, P.z + 0.6, P.x + 0.6, 0.6, P.z);
+  await trig();
+  assert.equal(await pe((e) => e.sealed), false);
+  // Gun hangs 7 cm below and 11 cm ahead of the ray origin.
+  await aim(P.x, 0.21 + 0.07, P.z + 0.11, P.x, 0.21 + 0.07, P.z - 1);
+  await trig();
+  assert.equal(await pe((e) => e.sealed), true, 'tape gun seals the carton');
+  await let_();
+
+  await act('pk:weight:within');
+  // Point at the printer and pull the trigger.
+  const PR = L.printer;
+  await aim(PR.x, 0.4, PR.z + 0.4, PR.x, PR.h / 2, PR.z);
+  await ev(() => {
+    const c = globalThis.__app.xrInput.controllers[0];
+    c.ray.visible = true;
+  });
+  await page.waitForTimeout(150); // let a frame compute the ray hover
+  await trig();
+  assert.equal(await pe((e) => e.labelPrinted), true, 'trigger on the printer prints the label');
+
+  // Label onto the carton top.
+  await g(PR.x, 0.075, PR.z + PR.d / 2 + 0.06);
+  assert.equal(await sq(), 'pk:label');
+  await g(P.x, 0.3, P.z);
+  await let_();
+  assert.equal(await pe((e) => e.labelApplied), true);
+
+  // Carton → outbound conveyor → confirm release.
+  await g(P.x, P.top + 0.09, P.z);
+  assert.equal(await sq(), 'pk:box');
+  await g(L.conveyor.x, 0.25, L.conveyor.intakeZ);
+  await let_();
+  assert.equal(await pe((e) => e.staged), true);
+  await act('release');
+  const r = await pe((e) => e.results());
+  assert.equal(r.complete, true);
+  assert.equal(r.score, 100, `pack VR run should be perfect: ${JSON.stringify(r.checkpoints.filter((c) => c.status !== 'passed'))}`);
   await page.close();
 }

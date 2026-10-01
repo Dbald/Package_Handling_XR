@@ -80,7 +80,8 @@ export class XRInput {
     c.grip.add(c.visual);
     c.prev = [];
     const { app } = this;
-    if (app.engine.pauseReasons.has('input') || app.engine.pauseReasons.has('xr-visibility')) {
+    const reasons = app.session.pauseReasons;
+    if (reasons.has('input') || reasons.has('xr-visibility')) {
       app.info('Controller tracking is back. Select Resume when you are ready.');
     }
     app.refreshUI();
@@ -97,7 +98,7 @@ export class XRInput {
       const { app } = this;
       if (!app.xr || !wasConnected) return;
       if (c.held) app.freezeHeld(c, 'disconnect');
-      app.engine.pause('input');
+      app.session.pause('input');
       app.refreshUI();
     }, 0);
   }
@@ -106,10 +107,7 @@ export class XRInput {
     const { app } = this;
     app.sfx.unlock();
     if (!c.connected) return;
-    if (c.held && c.held !== 'practice' && app.scanAlignment(c.held).near) {
-      app.handScan(c.held, c);
-      return;
-    }
+    if (c.held && app.onHeldTrigger(c)) return;
     const h = c.hover;
     if (!h) return;
     if (h.kind === 'panel' && h.button) {
@@ -118,6 +116,10 @@ export class XRInput {
     } else if (h.kind === 'button') {
       this.haptic(c, 0.25, 25);
       app.dispatch(h.action, 'xr', c);
+    } else if (h.kind === 'pk') {
+      if (h.key === 'pk:printer') app.dispatch('pk:print', 'xr', c);
+      else if (h.key.startsWith('pk:') && app.pack.itemKey(h.key)) app.pack.dispatch('pick', app.pack.itemKey(h.key));
+      app.refreshUI();
     } else if (h.kind === 'package' && app.engine.phase === 'exercise') {
       const r = app.engine.inspect(h.key, { input: 'xr' });
       app.showResult(r, { controller: c });
@@ -127,7 +129,9 @@ export class XRInput {
 
   onSqueeze(c) {
     if (!c.connected || c.held) return;
-    const target = c.near ?? (c.hover && (c.hover.kind === 'package' || c.hover.kind === 'practice') ? { key: c.hover.key, far: true } : null);
+    const h = c.hover;
+    const farOk = h && (h.kind === 'package' || h.kind === 'practice' || (h.kind === 'pk' && h.key !== 'pk:printer' && h.key !== 'pk:tote'));
+    const target = c.near ?? (farOk ? { key: h.key, far: true } : null);
     if (!target) return;
     this.app.tryGrab(target.key, c, !!target.far);
   }
@@ -141,13 +145,11 @@ export class XRInput {
     c.grip.getWorldPosition(tmp);
     let best = null;
     let bestD = NEAR_GRAB;
-    const candidates = Object.entries(app.world.packages).map(([k, p]) => [k, p.mesh]);
-    if (app.world.practice.visible) candidates.push(['practice', app.world.practice.children[0]]);
-    for (const [key, mesh] of candidates) {
-      if (this.controllers.some((o) => o.held === key)) continue;
-      // A snap can happen earlier in the same frame; refresh ancestors first.
-      mesh.updateWorldMatrix(true, false);
-      box.setFromObject(mesh);
+    for (const [key, obj] of app.grabCandidates()) {
+      if (!obj.visible || this.controllers.some((o) => o.held === key)) continue;
+      // A snap can happen earlier in the same frame; refresh the whole chain first.
+      obj.updateWorldMatrix(true, true);
+      box.setFromObject(obj);
       const d = box.distanceToPoint(tmp);
       if (d <= bestD) {
         bestD = d;
@@ -193,9 +195,13 @@ export class XRInput {
       }
       c.near = c.held ? null : this.nearest(c);
       if (c.visual) c.visual.userData.grabDot.material.opacity = c.near ? 0.95 : 0.35;
-      hovers.push(c.near ? { kind: c.near.key === 'practice' ? 'practice' : 'package', key: c.near.key } : c.hover);
+      const nearKind = !c.near ? null : c.near.key === 'practice' ? 'practice' : c.near.key.startsWith('pk:') ? 'pk' : 'package';
+      hovers.push(c.near ? { kind: nearKind, key: c.near.key } : c.hover);
 
-      if (c.held && c.held !== 'practice') {
+      if (c.held && c.held.startsWith('pk:')) {
+        const zoneLabel = app.pack.zoneLabelFor(c.held);
+        if (zoneLabel) hovers.push({ kind: 'zone', key: c.held, zoneLabel, object: app.objFor(c.held) });
+      } else if (c.held && c.held !== 'practice') {
         const g = app.world.packages[c.held].group;
         g.getWorldPosition(tmp);
         app.station.worldToLocal(tmp);
@@ -206,7 +212,7 @@ export class XRInput {
       this.pollGamepad(c, dt);
     }
     // Drop targets highlight while a package is held; the hovered one brightens.
-    const anyHeld = this.controllers.some((c) => c.held && c.held !== 'practice');
+    const anyHeld = this.controllers.some((c) => c.held && c.held !== 'practice' && !c.held.startsWith('pk:'));
     for (const [name, z] of Object.entries(app.world.zones)) {
       z.highlight.group.visible = anyHeld;
       const hot = heldZone === name;
@@ -228,7 +234,7 @@ export class XRInput {
     if (!c.held) return;
     const ax = gp.axes.length >= 4 ? gp.axes[2] : gp.axes[0] ?? 0;
     const ay = gp.axes.length >= 4 ? gp.axes[3] : gp.axes[1] ?? 0;
-    const obj = c.held === 'practice' ? this.app.world.practice : this.app.world.packages[c.held].group;
+    const obj = this.app.objFor(c.held);
     const dead = 0.25;
     if (Math.abs(ax) > dead) obj.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ax * 2.6 * dt));
     if (Math.abs(ay) > dead) obj.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), ay * 2.6 * dt));

@@ -89,3 +89,21 @@ Proposed gate: ≥ 4 of 5 complete both paths without intervention.
 **Still to record:** OS and browser versions, full §12 checklist, a measured 5-minute frame-timing run.
 
 **Product feedback:** real parcel hubs work a sort-and-load flow: packages come down a ramp, a handheld scanner gives the destination, and the worker loads a trailer next to a coworker. Proposed as the next scenario (see session notes).
+
+---
+
+## Session 2 checklist: Station 1 Pack-Out (new, not yet run on the headset)
+
+- [ ] Shift briefing reads clearly. **Start Station 1** lands at the pack bench.
+- [ ] Handheld scanner: pick up from the front left, the red beam is visible, the tote label scans and the order monitor updates.
+- [ ] Item barcodes read when facing the beam. Facing away gives "no read" with no penalty.
+- [ ] Phone case scans as NOT ON ORDER. Dropping it into the yellow exception bin works.
+- [ ] Carton slots S/M/L are reachable seated and standing. S and L are refused with an explanation. M builds on the pack scale.
+- [ ] Items drop into the carton. Air pillows from the basket drop in.
+- [ ] Tape gun seals only when held over the carton. The flaps close and the tape shows.
+- [ ] Scale and monitor weight are readable. Trigger on the printer prints the label. The label goes onto the carton top.
+- [ ] Carton onto the roller conveyor, then Confirm Release. Station 1 shows its score.
+- [ ] **Continue to Station 2** fades to the dock bench comfortably (no nausea).
+- [ ] Mistake run: pack the phone case (critical), ship before labelling (critical). Both are blocked and retained, and the result is practice recommended.
+- [ ] Frame rate with both stations in view (OVR Metrics: ≥ 95 % of frames ≤ 13.9 ms at 72 Hz).
+- [ ] Order monitor text legible from the standing position.

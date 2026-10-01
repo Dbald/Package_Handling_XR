@@ -1,14 +1,18 @@
-// App orchestrator: owns the engine, the scene, world-space UI and the
-// XR/desktop lifecycle. Every procedural action goes through the engine;
-// animations only ever follow a validated result (PRD §9).
+// App orchestrator: owns the session (Station 1 Pack-Out → Station 2 Dock
+// Check), the scene, world-space UI and the XR/desktop lifecycle. Every
+// procedural action goes through a station engine; animations only ever
+// follow a validated result (PRD §9). `this.engine` is the Station 2 engine.
 import * as THREE from 'three';
-import { ProcedureEngine } from './engine.js';
+import { Session } from './session.js';
+import { PackStation, PACK_BASE } from './pack/station.js';
+import { PACK_LAYOUT } from './pack/scene.js';
 import { SCENARIO, weightRange } from './scenario.js';
 import { buildWorld, LAYOUT, PACKAGE_SIZES } from './scene.js';
 import { brandTexture } from './textures.js';
 import { Panel } from './panel.js';
 import { buildMainSpec, buildHelpSpec, markerTarget } from './guidance.js';
 import { Sfx } from './audio.js';
+import { mergeStatic } from './merge.js';
 import { startXRSession, describeXRError } from './xr-session.js';
 import { XRInput } from './xr-input.js';
 import { DesktopInput } from './desktop-input.js';
@@ -20,6 +24,8 @@ const IDENTITY = new THREE.Quaternion();
 const UP = new THREE.Vector3(0, 1, 0);
 const RIGHT = new THREE.Vector3(1, 0, 0);
 
+const DOCK_BASE = new THREE.Vector3(0, 0, 0);
+
 const POSTURES = {
   standing: { bench: 0.92, eye: 1.62 },
   seated: { bench: 0.72, eye: 1.2 },
@@ -29,7 +35,8 @@ export class App {
   constructor({ container, ui }) {
     this.container = container;
     this.ui = ui;
-    this.engine = new ProcedureEngine();
+    this.session = new Session();
+    this.engine = this.session.dock;
     this.sfx = new Sfx();
     const reduce = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     this.settings = { posture: 'standing', benchHeight: POSTURES.standing.bench, reducedMotion: reduce, muted: false };
@@ -52,7 +59,6 @@ export class App {
     this.scene.add(this.world.worldRoot);
 
     this.mainPanel = new Panel({ width: 1.3, height: 0.86, name: 'main-panel' });
-    this.world.station.add(this.mainPanel.mesh);
     this.helpPanel = new Panel({ width: 1.1, height: 1.02, name: 'help-panel' });
     this.helpPanel.mesh.visible = false;
     // Modal: always drawn on top so a held/assisted package can never cover it.
@@ -93,19 +99,25 @@ export class App {
 
     this.xrInput = new XRInput(this);
     this.desktop = new DesktopInput(this);
+    this.pack = new PackStation(this);
+    this.world.worldRoot.add(this.pack.group);
+    // Batch static scenery into fewer draw calls (Quest 2 frame budget).
+    this.mergedMeshes = mergeStatic(this.world.worldRoot);
+    this.transition = null;
 
-    this.engine.on((evt) => this.onEngineEvent(evt));
+    for (const src of [this.session, this.session.pack, this.session.dock]) src.on((evt) => this.onEngineEvent(evt));
+    this.placeMainPanel();
     this.applyHeight();
     this.resetScene();
-    this.desktop.resetCamera();
+    this.recenter();
     this.resize();
     globalThis.addEventListener('resize', () => this.resize());
     document.addEventListener('visibilitychange', () => {
       // During a session, XRSession visibility is authoritative (some browsers
       // may report the page hidden while immersive); see enterVR().
       if (this.xr) return;
-      if (document.hidden) this.engine.pause('hidden');
-      else this.engine.resume('hidden');
+      if (document.hidden) this.session.pause('hidden');
+      else this.session.resume('hidden');
       this.refreshUI();
     });
     this.refreshUI();
@@ -146,6 +158,8 @@ export class App {
     const holder = active ? this.holders[active] : null;
     return {
       engine: e,
+      session: this.session,
+      packStation: this.pack,
       vr: !!this.xr,
       xrActive: !!this.xr,
       held: holder ? active : null,
@@ -176,8 +190,8 @@ export class App {
     this.ui.render({
       main,
       help,
-      results: this.engine.phase === 'complete' ? this.engine.results() : null,
-      paused: this.engine.isPaused(),
+      results: this.session.phase === 'complete' ? this.session.results() : null,
+      paused: this.session.isPaused(),
       xrActive: !!this.xr,
     });
   }
@@ -201,14 +215,102 @@ export class App {
   }
 
   onEngineEvent(evt) {
-    if (evt.type === 'phase') {
-      if (evt.phase === 'exercise') {
-        this.dropPractice();
-        this.world.practice.visible = false;
-      }
-      if (evt.phase === 'complete') this.resultsPage = 'summary';
+    if (evt.type === 'phase' && evt.phase === 'exercise') {
+      this.dropPractice();
+      this.world.practice.visible = false;
     }
+    if (evt.type === 'phase' || evt.type === 'action') this.session.sync();
+    if (evt.type === 'session-phase' && evt.phase === 'complete') this.resultsPage = 'summary';
     this.refreshUI();
+  }
+
+  get stationKey() {
+    return this.session.stationKey;
+  }
+
+  activeStationGroup() {
+    return this.stationKey === 'pack' ? this.pack.group : this.world.station;
+  }
+
+  stationBase() {
+    return this.stationKey === 'pack' ? PACK_BASE : DOCK_BASE;
+  }
+
+  placeMainPanel() {
+    const group = this.activeStationGroup();
+    if (this.mainPanel.mesh.parent !== group) group.add(this.mainPanel.mesh);
+    const P = this.stationKey === 'pack' ? PACK_LAYOUT.panel : LAYOUT.panel;
+    this.mainPanel.mesh.position.set(P.x, this.settings.posture === 'seated' ? P.seatedY : P.standingY, P.z);
+    const marker = this.world.marker;
+    if (marker.parent !== group) group.add(marker);
+  }
+
+  /** Fade out, run `fn` (e.g. move to another station), fade back in. */
+  fadeTransition(fn) {
+    this.endIntro();
+    this.transition = { t: 0, fn, fired: false };
+    this.fade.material.opacity = 0;
+    this.fade.visible = true;
+  }
+
+  updateTransition(dt) {
+    const tr = this.transition;
+    if (!tr) return;
+    tr.t += dt;
+    const { pos } = this.viewerPose();
+    this.fade.position.copy(pos);
+    const out = 0.45;
+    const total = 1.1;
+    if (tr.t < out) {
+      this.fade.material.opacity = tr.t / out;
+    } else {
+      if (!tr.fired) {
+        tr.fired = true;
+        tr.fn();
+      }
+      this.fade.material.opacity = Math.max(0, 1 - (tr.t - out) / (total - out));
+    }
+    if (tr.t >= total) {
+      this.fade.visible = false;
+      this.transition = null;
+    }
+  }
+
+  goToDock(skip) {
+    if (!this.session.toDock({ skip })) return null;
+    for (const c of this.xrInput.controllers) if (c.held) this.freezeHeld(c, 'move');
+    this.world.practice.visible = false;
+    this.fadeTransition(() => {
+      this.placeMainPanel();
+      this.recenter();
+    });
+    return { tone: 'info', message: 'Station 2 · Dock Check. Read the briefing, then start.' };
+  }
+
+  objFor(key) {
+    if (key === 'practice') return this.world.practice;
+    if (key.startsWith('pk:')) return this.pack.objFor(key);
+    return this.world.packages[key]?.group ?? null;
+  }
+
+  /** [key, object] pairs a hand can grab right now. */
+  grabCandidates() {
+    const out = [];
+    if (this.world.practice.visible) out.push(['practice', this.world.practice]);
+    if (this.stationKey === 'pack') out.push(...this.pack.grabCandidates());
+    else for (const [k, p] of Object.entries(this.world.packages)) out.push([k, p.group]);
+    return out;
+  }
+
+  /** Trigger pressed while holding something. Returns true when consumed. */
+  onHeldTrigger(c) {
+    if (!c.held || c.held === 'practice') return false;
+    if (c.held.startsWith('pk:')) return this.pack.onTrigger(c);
+    if (this.scanAlignment(c.held).near) {
+      this.handScan(c.held, c);
+      return true;
+    }
+    return false;
   }
 
   // --------------------------------------------------------------- actions
@@ -222,11 +324,18 @@ export class App {
     const ctx = { input: input === 'xr' ? 'xr-assisted' : input };
     const [verb, arg] = id.split(':');
     let r = null;
+    if (verb === 'pk') {
+      const [, v, a] = id.split(':');
+      r = this.pack.dispatch(v, a, ctx);
+      if (r) this.showResult(r, { controller });
+      this.refreshUI();
+      return r;
+    }
     switch (verb) {
       case 'condition': r = e.submitCondition(key, arg, ctx); break;
       case 'decide': r = e.decide(key, arg, ctx); break;
       case 'weight': r = e.confirmWeight(key, arg, ctx); break;
-      case 'release': r = this.confirmRelease(ctx); break;
+      case 'release': r = this.stationKey === 'pack' ? this.pack.confirmRelease(ctx) : this.confirmRelease(ctx); break;
       case 'assist': r = this.assist(arg, key, ctx); break;
       case 'retrieve': this.retrieve(key); break;
       case 'place': r = this.assistPlace(key, arg, ctx); break;
@@ -239,8 +348,12 @@ export class App {
       case 'posture': this.setPosture(arg); break;
       case 'height': this.adjustHeight(arg === 'up' ? 0.03 : -0.03); break;
       case 'recenter': this.recenter(); break;
-      case 'continue': r = e.startBriefing(); break;
-      case 'start': r = e.startExercise(); break;
+      case 'continue': this.session.toBriefing(); break;
+      case 'start': r = this.session.startDock(); break;
+      case 'station':
+        if (arg === 'pack') r = this.session.startPack();
+        else r = this.goToDock(arg === 'skip');
+        break;
       case 'toggle':
         if (arg === 'motion') this.settings.reducedMotion = !this.settings.reducedMotion;
         if (arg === 'sound') this.sfx.muted = this.settings.muted = !this.settings.muted;
@@ -366,6 +479,7 @@ export class App {
   /** Called by XRInput when a controller squeezes on a grabbable. */
   tryGrab(key, controller, far) {
     const e = this.engine;
+    if (key.startsWith('pk:')) return this.pack.tryGrab(key, controller, far);
     if (key === 'practice') {
       if (!this.world.practice.visible) return false;
       this.attachToHand('practice', this.world.practice, controller, far);
@@ -414,10 +528,14 @@ export class App {
   releaseFromHand(controller, input = 'xr') {
     const key = controller.held;
     if (!key) return;
+    if (key.startsWith('pk:')) {
+      this.pack.release(controller);
+      return;
+    }
     controller.held = null;
     if (key === 'practice') {
       const obj = this.world.practice;
-      this.station.attach(obj);
+      this.pack.group.attach(obj);
       this.restOrDrop('practice', obj, 0.14);
       if (this.practiceHint === 1) {
         this.practiceHint = 2;
@@ -448,12 +566,20 @@ export class App {
     const key = controller.held;
     if (!key) return;
     controller.held = null;
-    const obj = key === 'practice' ? this.world.practice : this.world.packages[key].group;
-    this.station.attach(obj);
-    if (key !== 'practice') {
+    const obj = this.objFor(key);
+    if (key.startsWith('pk:')) {
+      this.pack.group.attach(obj);
+      this.pack.loc[key] = 'frozen';
+    } else if (key === 'practice') {
+      this.pack.group.attach(obj);
+    } else {
+      this.station.attach(obj);
+    }
+    if (key !== 'practice' && !key.startsWith('pk:')) {
       this.holders[key] = null;
       this.phys[key].zone = 'frozen';
     }
+    if (reason === 'move') return;
     this.info(reason === 'tracking'
       ? 'Controller tracking lost — the item is held in place. Grab it again when your controller is visible.'
       : 'Controller disconnected — the item is held in place. Nothing was dropped or scored.', 'warning');
@@ -464,8 +590,8 @@ export class App {
     for (const c of this.xrInput.controllers) {
       if (c.held === key) {
         c.held = null;
-        const obj = key === 'practice' ? this.world.practice : this.world.packages[key].group;
-        this.station.attach(obj);
+        const obj = this.objFor(key);
+        (key === 'practice' || key.startsWith('pk:') ? this.pack.group : this.station).attach(obj);
       }
     }
   }
@@ -532,8 +658,10 @@ export class App {
     this.phys[key].zone = zone;
   }
 
+  /** Practice box sits on the Station 1 pack scale during setup. */
   practiceHome() {
-    return new THREE.Vector3(LAYOUT.scale.x, LAYOUT.scale.top + 0.07, LAYOUT.scale.z);
+    const P = PACK_LAYOUT.packZone;
+    return new THREE.Vector3(P.x, P.top + 0.07, P.z);
   }
 
   /** Where is the barcode relative to the scanner target? */
@@ -575,13 +703,13 @@ export class App {
     this.helpOpen = open;
     this.helpPanel.mesh.visible = open;
     if (open) {
-      this.engine.pause('menu');
+      this.session.pause('menu');
       const { pos, fwd } = this.viewerPose();
       const dist = this.xr ? 0.95 : 1.15;
       this.helpPanel.mesh.position.copy(pos).addScaledVector(fwd, dist).add(v1.set(0, -0.12, 0));
       this.helpPanel.mesh.lookAt(pos.x, this.helpPanel.mesh.position.y, pos.z);
     } else {
-      this.engine.resume('menu');
+      this.session.resume('menu');
     }
     this.lastSpecKey = null;
     this.refreshUI();
@@ -593,8 +721,8 @@ export class App {
       return;
     }
     if (this.helpOpen) this.toggleHelp(false);
-    const wasPaused = this.engine.isPaused();
-    this.engine.resume();
+    const wasPaused = this.session.isPaused();
+    this.session.resume();
     if (wasPaused) this.info('Resumed. Scoring and the timer are running again.');
   }
 
@@ -617,8 +745,8 @@ export class App {
   applyHeight() {
     const H = this.settings.benchHeight;
     this.station.position.y = H;
-    const P = LAYOUT.panel;
-    this.mainPanel.mesh.position.set(P.x, this.settings.posture === 'seated' ? P.seatedY : P.standingY, P.z);
+    if (this.pack) this.pack.group.position.y = H;
+    this.placeMainPanel();
     for (const key of Object.keys(this.phys)) {
       if (this.phys[key].zone === 'floor') this.world.packages[key].group.position.y = -H + PACKAGE_SIZES[key][1] / 2;
     }
@@ -635,8 +763,9 @@ export class App {
 
   recenter() {
     const root = this.world.worldRoot;
+    const base = this.stationBase();
     if (!this.xr) {
-      root.position.set(0, 0, 0);
+      root.position.set(-base.x, 0, -base.z);
       root.rotation.set(0, 0, 0);
       this.desktop.resetCamera();
       return;
@@ -647,8 +776,10 @@ export class App {
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(quat);
     const yaw = Math.atan2(-fwd.x, -fwd.z);
     // Held items live in controller space, so moving the world never drops them.
+    // The active station's standing spot lands under the learner's head.
     root.rotation.set(0, yaw, 0);
-    root.position.set(pos.x, 0, pos.z);
+    const offset = base.clone().applyAxisAngle(UP, yaw);
+    root.position.set(pos.x - offset.x, 0, pos.z - offset.z);
     this.applyFloorOffset();
     this.lastSpecKey = null;
     if (this.helpOpen) this.toggleHelp(true);
@@ -660,10 +791,11 @@ export class App {
     for (const c of this.xrInput.controllers) c.held = null;
     this.helpOpen = false;
     this.helpPanel.mesh.visible = false;
-    this.engine.reset();
+    this.session.reset();
     this.resetScene();
-    if (this.xr) this.recenter();
-    else this.desktop.resetCamera();
+    this.pack.reset();
+    this.placeMainPanel();
+    this.recenter();
     this.feedback = { tone: 'info', text: 'New session started. Everything has been reset.' };
     this.lastSpecKey = null;
     this.refreshUI();
@@ -682,7 +814,7 @@ export class App {
       this.holders[key] = null;
     }
     const practice = this.world.practice;
-    this.station.attach(practice);
+    this.pack.group.attach(practice);
     practice.position.copy(this.practiceHome());
     practice.quaternion.identity();
     practice.visible = true;
@@ -704,7 +836,7 @@ export class App {
     }
     const { session, floor } = result;
     this.xr = { session, floor, visibility: session.visibilityState ?? 'visible' };
-    this.engine.resume('hidden');
+    this.session.resume('hidden');
     this.applyFloorOffset();
     this.pendingRecenter = 3;
     this.intro = { t: 0, placed: false };
@@ -714,7 +846,7 @@ export class App {
       if (!this.xr) return;
       this.xr.visibility = session.visibilityState;
       if (session.visibilityState !== 'visible') {
-        this.engine.pause('xr-visibility');
+        this.session.pause('xr-visibility');
         for (const c of this.xrInput.controllers) if (c.held) this.freezeHeld(c, 'tracking');
       }
       this.refreshUI();
@@ -763,16 +895,14 @@ export class App {
     this.endIntro();
     for (const c of this.xrInput.controllers) if (c.held) this.freezeHeld(c, 'disconnect');
     this.xr = null;
-    this.engine.resume('hidden');
-    if (document.hidden) this.engine.pause('hidden');
-    this.engine.resume('input');
-    this.engine.resume('xr-visibility');
-    if (this.engine.phase === 'exercise') this.engine.pause('xr-exit');
-    const root = this.world.worldRoot;
-    root.position.set(0, 0, 0);
-    root.rotation.set(0, 0, 0);
+    this.session.resume('hidden');
+    if (document.hidden) this.session.pause('hidden');
+    this.session.resume('input');
+    this.session.resume('xr-visibility');
+    if (['pack', 'dock'].includes(this.session.phase)) this.session.pause('xr-exit');
+    this.transition = null;
     if (this.helpOpen) this.toggleHelp(false);
-    this.desktop.resetCamera();
+    this.recenter();
     this.resize();
     this.ui.setMode('desktop');
     this.lastSpecKey = null;
@@ -822,6 +952,11 @@ export class App {
   pickables(exclude = null) {
     if (this.helpOpen) return [this.helpPanel.mesh, this.mainPanel.mesh];
     const list = [this.mainPanel.mesh];
+    if (this.stationKey === 'pack') {
+      if (this.world.practice.visible && exclude !== 'practice') list.push(this.world.practice.children[0]);
+      list.push(...this.pack.pickables());
+      return list;
+    }
     for (const key of SCENARIO.order) {
       if (exclude !== key && this.phys[key].zone !== 'held') list.push(this.world.packages[key].mesh);
     }
@@ -844,6 +979,7 @@ export class App {
       if (ud.kind === 'practice') return { kind: 'practice', key: 'practice', label: ud.label, object: o, distance: h.distance, point: h.point };
       if (ud.kind === 'button') return { kind: 'button', action: ud.action, label: ud.label, object: o, distance: h.distance, point: h.point };
       if (ud.kind === 'tool') return { kind: 'tool', label: ud.label, object: o, distance: h.distance, point: h.point };
+      if (ud.kind === 'pk') return { kind: 'pk', key: ud.key, label: ud.label, object: o, distance: h.distance, point: h.point };
     }
     return null;
   }
@@ -858,7 +994,9 @@ export class App {
       if (h.kind === 'panel') {
         if (h.button && !panelHover.has(h.panel)) panelHover.set(h.panel, h.button.id);
       } else {
-        hot.add(h.object ?? h.key);
+        if (h.object) hot.add(h.object);
+        if (h.key) hot.add(h.key);
+        if (h.action) hot.add(h.action);
         if (!tagTarget) tagTarget = h;
       }
     }
@@ -871,10 +1009,11 @@ export class App {
     const pm = this.world.practice.children[0];
     pm.material.emissive.setHex(hot.has(pm) || hot.has('practice') ? 0x333333 : 0);
     this.world.releaseBtn.material.emissive.setHex(hot.has(this.world.releaseBtn) ? 0x1f5a36 : 0);
+    this.pack.setHover(hot);
 
     const tag = this.world.hoverTag;
     if (tagTarget) {
-      const obj = tagTarget.object ?? (tagTarget.key === 'practice' ? this.world.practice : this.world.packages[tagTarget.key]?.group);
+      const obj = tagTarget.object ?? (tagTarget.key ? this.objFor(tagTarget.key) : null);
       const label = tagTarget.zoneLabel ?? tagTarget.label ?? obj?.userData?.label;
       if (obj && label) {
         obj.getWorldPosition(v1);
@@ -928,7 +1067,17 @@ export class App {
 
   updateMarker(t) {
     const { marker, markerTag } = this.world;
-    const m = !this.engine.isPaused() ? markerTarget(this.engine) : null;
+    if (this.stationKey === 'pack') {
+      const pm = !this.session.isPaused() ? this.pack.markerPose() : null;
+      marker.visible = !!pm;
+      if (!pm) return;
+      if (!this.settings.reducedMotion) pm.pos.y += Math.sin(t * 3) * 0.012;
+      marker.position.copy(pm.pos);
+      markerTag.set(pm.text);
+      markerTag.mesh.lookAt(this.viewerPose().pos);
+      return;
+    }
+    const m = !this.session.isPaused() && this.session.phase === 'dock' ? markerTarget(this.engine) : null;
     if (!m) {
       marker.visible = false;
       return;
@@ -999,7 +1148,9 @@ export class App {
     } else {
       this.desktop.update(dt);
     }
+    this.updateTransition(dt);
     this.updateInstruments(now);
+    this.pack.update(now);
     this.updateMarker(t);
     this.updateShadows();
     this.mainPanel.update();

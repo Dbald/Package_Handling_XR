@@ -13,7 +13,8 @@
 // last valid state"). Checkpoints score only the first evaluated attempt, and
 // repeated identical errors never add penalties.
 
-import { SCENARIO, MAX_SCORE, weightRange, weightWithinRange } from './scenario.js';
+import { SCENARIO, weightRange, weightWithinRange } from './scenario.js';
+import { BaseEngine } from './engine-base.js';
 
 export const PHASES = ['setup', 'briefing', 'exercise', 'complete'];
 
@@ -24,110 +25,22 @@ const STATE_ORDER = {
 
 const FINAL_STATE = { damaged: 'quarantined', intact: 'outbound' };
 
-function defaultId() {
-  const c = globalThis.crypto;
-  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
-  return 'sess-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
 const fmtKg = (v) => `${v.toFixed(2)} kg`;
 
-export class ProcedureEngine {
-  constructor({ scenario = SCENARIO, now = () => Date.now(), idGen = defaultId } = {}) {
-    this.scenario = scenario;
-    this.now = now;
-    this.idGen = idGen;
-    this.listeners = new Set();
-    this.reset();
+export class ProcedureEngine extends BaseEngine {
+  constructor({ scenario = SCENARIO, ...opts } = {}) {
+    super({ scenario, ...opts });
   }
 
-  // ---------------------------------------------------------------- lifecycle
-
-  reset() {
-    const s = this.scenario;
-    this.sessionId = this.idGen();
-    this.phase = 'setup';
-    this.pauseReasons = new Set();
+  _initState() {
     this.packages = {};
-    for (const key of s.order) {
+    for (const key of this.scenario.order) {
       this.packages[key] = { key, state: 'waiting' };
     }
-    this.checkpoints = {};
-    for (const cp of s.checkpoints) {
-      this.checkpoints[cp.id] = { status: 'pending', corrected: false, note: null };
-    }
-    this.criticals = [];
-    this.log = [];
-    this.inputModes = new Set();
-    this.elapsedAcc = 0;
-    this.runningSince = null;
-    this.lastFeedback = null;
-    this._emit({ type: 'reset' });
   }
 
-  on(fn) {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
-  }
-
-  _emit(evt) {
-    for (const fn of this.listeners) fn(evt, this);
-  }
-
-  _setPhase(phase) {
-    if (this.phase === phase) return;
-    this.phase = phase;
-    this._syncTimer();
-    this._emit({ type: 'phase', phase });
-  }
-
-  startBriefing() {
-    if (this.phase !== 'setup') return this._result(false, 'WRONG_PHASE', 'info', 'Briefing is already open.');
-    this._setPhase('briefing');
-    return this._result(true, 'BRIEFING', 'info', 'Read the rules, then start the exercise.');
-  }
-
-  startExercise() {
-    if (this.phase === 'setup') this._setPhase('briefing');
-    if (this.phase !== 'briefing') return this._result(false, 'WRONG_PHASE', 'info', 'The exercise has already started.');
-    this._setPhase('exercise');
-    return this._result(true, 'STARTED', 'info', `Pick up ${this._pkg('A').label} and inspect every side.`);
-  }
-
-  // ------------------------------------------------------------------ pausing
-
-  pause(reason) {
-    if (this.pauseReasons.has(reason)) return;
-    this.pauseReasons.add(reason);
-    this._syncTimer();
-    this._emit({ type: 'pause', paused: true, reason });
-  }
-
-  resume(reason) {
-    const had = reason ? this.pauseReasons.delete(reason) : this.pauseReasons.size > 0;
-    if (!reason) this.pauseReasons.clear();
-    if (!had) return;
-    this._syncTimer();
-    this._emit({ type: 'pause', paused: this.isPaused(), reason });
-  }
-
-  isPaused() {
-    return this.pauseReasons.size > 0;
-  }
-
-  _syncTimer() {
-    const shouldRun = this.phase === 'exercise' && this.pauseReasons.size === 0;
-    const t = this.now();
-    if (shouldRun && this.runningSince === null) {
-      this.runningSince = t;
-    } else if (!shouldRun && this.runningSince !== null) {
-      this.elapsedAcc += t - this.runningSince;
-      this.runningSince = null;
-    }
-  }
-
-  elapsedMs() {
-    return this.elapsedAcc + (this.runningSince !== null ? this.now() - this.runningSince : 0);
+  _startMessage() {
+    return `Pick up ${this._pkg('A').label} and inspect every side.`;
   }
 
   // ------------------------------------------------------------------ queries
@@ -155,64 +68,7 @@ export class ProcedureEngine {
     return order.indexOf(this.packages[key].state) >= order.indexOf(state);
   }
 
-  score() {
-    let total = 0;
-    for (const cp of this.scenario.checkpoints) {
-      if (this.checkpoints[cp.id].status === 'passed') total += cp.points;
-    }
-    return total;
-  }
-
-  isComplete() {
-    return this.phase === 'complete';
-  }
-
-  results() {
-    const s = this.scenario;
-    const score = this.score();
-    const complete = this.isComplete();
-    let status = 'incomplete';
-    if (complete) {
-      const ok = score >= s.proficiency.minScore && this.criticals.length <= s.proficiency.maxCriticalErrors;
-      status = ok ? 'proficient' : 'practice';
-    }
-    const statusLabel = {
-      incomplete: 'Incomplete',
-      proficient: 'Completed — proficiency met',
-      practice: 'Completed — practice recommended',
-    }[status];
-    const checkpoints = s.checkpoints.map((cp) => ({
-      id: cp.id,
-      pkg: cp.pkg,
-      label: cp.label,
-      points: cp.points,
-      ...this.checkpoints[cp.id],
-    }));
-    return {
-      sessionId: this.sessionId,
-      scenarioVersion: s.version,
-      status,
-      statusLabel,
-      complete,
-      passed: status === 'proficient',
-      score,
-      maxScore: MAX_SCORE,
-      threshold: { ...s.proficiency },
-      criticalErrors: this.criticals.map((c) => ({ ...c })),
-      corrections: checkpoints.filter((c) => c.corrected).length,
-      checkpoints,
-      elapsedMs: this.elapsedMs(),
-      inputModes: [...this.inputModes],
-    };
-  }
-
   // ------------------------------------------------------------------ helpers
-
-  _result(ok, code, tone, message, extra = {}) {
-    const r = { ok, code, tone, message, ...extra };
-    this.lastFeedback = r;
-    return r;
-  }
 
   _guard(key, ctx) {
     if (!this.packages[key]) return this._result(false, 'UNKNOWN_PACKAGE', 'warning', 'Unknown package.');
@@ -231,47 +87,8 @@ export class ProcedureEngine {
     return null;
   }
 
-  _evaluate(cpId, correct, note) {
-    const cp = this.checkpoints[cpId];
-    if (cp.status === 'pending') {
-      cp.status = correct ? 'passed' : 'failed';
-      if (!correct) cp.note = note ?? null;
-      return correct ? 'correct' : 'incorrect';
-    }
-    if (cp.status === 'failed' && correct) cp.corrected = true;
-    return null; // not the first attempt
-  }
-
-  _critical(type, key) {
-    const exists = this.criticals.some((c) => c.type === type && c.pkg === key);
-    if (!exists) {
-      this.criticals.push({
-        type,
-        pkg: key,
-        label: this.scenario.criticalErrors[type],
-        at: new Date(this.now()).toISOString(),
-      });
-    }
-    return !exists;
-  }
-
-  _record(key, action, { checkpointId = null, valid, first = null, critical = false, ctx }) {
-    const entry = {
-      sessionId: this.sessionId,
-      scenarioVersion: this.scenario.version,
-      packageId: key ? this._pkg(key).id : null,
-      checkpointId,
-      action,
-      timestamp: new Date(this.now()).toISOString(),
-      valid,
-      firstAttempt: first,
-      critical,
-      score: this.score(),
-      completion: this.isComplete() ? 'complete' : 'incomplete',
-      input: ctx?.input ?? 'unknown',
-    };
-    this.log.push(entry);
-    return entry;
+  _record(key, action, opts) {
+    return this._logEntry(key ? this._pkg(key).id : null, action, opts);
   }
 
   _finish(key, action, result, logOpts) {

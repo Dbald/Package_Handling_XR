@@ -108,18 +108,19 @@ export function buildWorld(scenario) {
   worldRoot.add(floor);
 
   const wallMat = lambert(0x8d949c);
-  const back = box(9, 3.4, 0.1, wallMat, 0.3, 1.7, -3.25);
-  const left = box(0.1, 3.4, 7, wallMat, -3.4, 1.7, -0.3);
-  const right = box(0.1, 3.4, 7, wallMat, 4, 1.7, -0.3);
-  const behind = box(9, 3.4, 0.1, wallMat, 0.3, 1.7, 3.2);
-  const ceiling = box(9, 0.05, 7, lambert(0x4a5057), 0.3, 3.4, -0.3);
+  // One hall holds both stations: Station 1 (pack) at x = -3.2, Station 2 at 0.
+  const back = box(11.6, 3.4, 0.1, wallMat, -1.0, 1.7, -3.25);
+  const left = box(0.1, 3.4, 7, wallMat, -6.8, 1.7, -0.3);
+  const right = box(0.1, 3.4, 7, wallMat, 4.8, 1.7, -0.3);
+  const behind = box(11.6, 3.4, 0.1, wallMat, -1.0, 1.7, 3.2);
+  const ceiling = box(11.6, 0.05, 7, lambert(0x4a5057), -1.0, 3.4, -0.3);
   worldRoot.add(back, left, right, behind, ceiling);
-  for (const [x, z] of [[-1.2, -1.5], [1.2, -1.5], [-1.2, 1.2], [1.2, 1.2]]) {
+  for (const [x, z] of [[-4.4, -1.5], [-2.0, -1.5], [-1.2, -1.5], [1.2, -1.5], [-4.4, 1.2], [-2.0, 1.2], [-1.2, 1.2], [1.2, 1.2]]) {
     const light = box(1.2, 0.02, 0.3, new THREE.MeshBasicMaterial({ color: 0xf4f6f8 }), x, 3.37, z);
     worldRoot.add(light);
   }
   const brand = labelPlane(brandTexture(scenario.org, scenario.title), 2.0, 0.5);
-  brand.position.set(-1.4, 2.35, -3.19);
+  brand.position.set(-1.6, 2.35, -3.19);
   worldRoot.add(brand);
 
   // Outbound dock opening where the conveyor ends.
@@ -127,6 +128,11 @@ export function buildWorld(scenario) {
   const dockSign = labelPlane(textTexture('OUTBOUND DOCK 3', { w: 512, h: 96, font: 'bold 50px system-ui', bg: '#1d6b3a' }), 0.8, 0.15);
   dockSign.position.set(LAYOUT.conveyor.x, 1.6, -3.18);
   worldRoot.add(dock, dockSign);
+  // Opening where Station 1's conveyor carries packed orders toward the dock.
+  const packDock = box(0.7, 0.8, 0.02, new THREE.MeshBasicMaterial({ color: 0x0b0e12 }), -2.6, 0.85, -3.19);
+  const packDockSign = labelPlane(textTexture('TO DOCK CHECK', { w: 512, h: 96, font: 'bold 48px system-ui', bg: '#1f2a36' }), 0.7, 0.13);
+  packDockSign.position.set(-2.6, 1.42, -3.18);
+  worldRoot.add(packDock, packDockSign);
 
   // Standing mat and floor safety lines (stationary: all tasks fit here).
   const standMat = box(0.9, 0.012, 0.6, lambert(0x1f2327), 0, 0.006, 0.05);
@@ -134,11 +140,17 @@ export function buildWorld(scenario) {
   const tapeMat = lambert(0xd9b21e);
   worldRoot.add(box(2.2, 0.004, 0.05, tapeMat, 0.1, 0.002, 0.45));
   worldRoot.add(box(0.05, 0.004, 1.6, tapeMat, -1.0, 0.002, -0.3));
+  worldRoot.add(box(0.9, 0.012, 0.6, lambert(0x1f2327), -3.2, 0.006, 0.05));
+  worldRoot.add(box(2.2, 0.004, 0.05, tapeMat, -3.1, 0.002, 0.45));
 
   // --------------------------------------------------------------- station
   const station = new THREE.Group();
   station.name = 'station';
   worldRoot.add(station);
+  const stationSign = labelPlane(textTexture(['STATION 2 · DOCK CHECK', { text: 'Inspect before loading', font: '30px system-ui' }],
+    { w: 768, h: 160, font: 'bold 60px system-ui', bg: '#1f2a36', fg: '#ffffff' }), 1.2, 0.25);
+  stationSign.position.set(-0.1, 1.75, -1.6);
+  station.add(stationSign);
 
   const { bench } = LAYOUT;
   const bw = bench.x1 - bench.x0;

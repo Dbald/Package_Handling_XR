@@ -24,7 +24,7 @@ function start() {
   const app = new App({ container: document.getElementById('stage'), ui });
   ui.onAction = (id) => app.dispatch(id, 'desktop');
   ui.onEnterVR = () => app.enterVR();
-  setInterval(() => ui.setTimer(app.engine.elapsedMs()), 500);
+  setInterval(() => ui.setTimer(app.session.elapsedMs()), 500);
   const refreshXR = () => detectXR().then((s) => {
     ui.setXRStatus(s);
     if (app.xr) ui.setMode('xr');
