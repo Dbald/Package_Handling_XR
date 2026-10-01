@@ -156,3 +156,27 @@ Proposed gate: ≥ 4 of 5 complete both paths without intervention.
 - [ ] They scan at Station 2 without being told.
 - [ ] They pick the right carton first try.
 - [ ] Time to finish Station 1.
+
+---
+
+## Session 4: visual pass and realism requests (Oct 1, 2026, Devin, Quest 2)
+
+**Worked:** "It looks great."
+
+**Requests → changes**
+| Observation / request | Change |
+|---|---|
+| The console stand at both stations merged into the outbound conveyor | Console moved left and narrowed to 1.15 m; its stand and bezel now clear the conveyor rail. Both monitors moved so they no longer overlap the console from the standing position. |
+| Station 2 needs a monitor that says what is in the package once scanned | New **receiving monitor** on the left, matching Station 1. It shows the inbound queue (on conveyor / at bench / quarantined / shipped). For the package at the bench it shows *Inspect it*, then *Quarantine* or *Scan the label*. After the scan it shows the package ID, shipper, contents, fragile flag and expected weight. The live scale reading is along the bottom. |
+| Four iterations per station | Station 1 is a **shift of four totes** with cartons M, S, L, M. The totes mix fragile items, mis-picks and one clean tote, and Replay gives a second shift of four. Station 2 has **four packages** (damaged, intact, intact, damaged). |
+| Packages should arrive from the conveyor, with the next one rolling in after each | New **inbound roller conveyor** on the left of Station 2. Packages queue on it, and the next rolls onto the arrival pad when the current one is quarantined or shipped. At Station 1, the next tote rolls in along the inbound rollers and the shipped carton rides away on the outbound line. |
+| Bench height buttons need clearer labelling, in their own section | The setup screen has labelled rows: **I am** (Seated / Standing), **Bench height · 92 cm** (▼ Lower bench / ▲ Raise bench) and **View** (Recenter). There is also a physical **BENCH HEIGHT ▼ LOWER · 92 cm · ▲ RAISE** switch under the front edge of both benches, and the setup prompt points at it. |
+| (side effect) Two damaged packages stacking in the quarantine tote would block the console | The quarantine tote became a **drop bin sunk into the bench**, so rejects stack below the bench top. |
+
+**Re-test:**
+- [ ] Console and monitors are clear of the conveyors at both stations, standing and seated.
+- [ ] The arrival pad and the drop bin are within comfortable reach.
+- [ ] A first-time user finds the bench-height switch without help.
+- [ ] The receiving monitor is readable after scanning (contents and expected weight).
+- [ ] Time for the full four-tote shift. This is the longest part of the session.
+- [ ] `?perf` with the inbound queue and the tote roll-in on screen.

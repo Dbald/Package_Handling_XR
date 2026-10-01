@@ -68,18 +68,26 @@ export function buildMainSpec(view) {
   }
 }
 
+/** Labelled settings rows: what each control does is written next to it. */
 function comfortRows(view) {
   const { settings } = view;
   return [
-    [
-      { id: 'posture:seated', label: 'Seated', active: settings.posture === 'seated' },
-      { id: 'posture:standing', label: 'Standing', active: settings.posture === 'standing' },
-    ],
-    [
-      { id: 'height:down', label: 'Bench lower' },
-      { id: 'height:up', label: 'Bench higher' },
-      { id: 'recenter', label: 'Recenter' },
-    ],
+    {
+      label: 'I am',
+      items: [
+        { id: 'posture:seated', label: 'Seated', active: settings.posture === 'seated' },
+        { id: 'posture:standing', label: 'Standing', active: settings.posture === 'standing' },
+      ],
+    },
+    {
+      label: 'Bench height',
+      note: `${Math.round(settings.benchHeight * 100)} cm`,
+      items: [
+        { id: 'height:down', label: '▼ Lower bench' },
+        { id: 'height:up', label: '▲ Raise bench' },
+      ],
+    },
+    { label: 'View', items: [{ id: 'recenter', label: 'Recenter (face the screen)' }] },
   ];
 }
 
@@ -105,7 +113,7 @@ function buildSetupSpec(view) {
     chip: 'Setup · not scored',
     icon: 'gear',
     title: 'Get comfortable',
-    subtitle: view.vr ? 'Set your height. Try grabbing the grey box.' : 'Set your view, then continue.',
+    subtitle: view.vr ? 'Bench top at your waist. Then grab the grey box.' : 'Set your view, then continue.',
     hints: view.vr ? [HINT.grab, HINT.press] : [],
     feedback: view.feedback,
     buttons: [
@@ -125,8 +133,8 @@ function buildSessionBriefingSpec(view) {
     title: 'Three goals',
     subtitle: 'Pack it, check it, ship it right.',
     cards: [
-      { icon: 'box', title: 'Pack it right', text: 'Right items, right box.' },
-      { icon: 'eye', title: 'Check it', text: 'Damage → quarantine.' },
+      { icon: 'box', title: 'Pack it right', text: '4 totes. Right items, right box.' },
+      { icon: 'eye', title: 'Check it', text: '4 packages. Damage → quarantine.' },
       { icon: 'ship', title: 'Ship verified', text: 'Scan, weigh, label.' },
     ],
     feedback: view.feedback,
@@ -141,6 +149,7 @@ function buildDockBriefingSpec(view) {
   return {
     chip: 'Station 2 · Dock check',
     title: 'Check before it ships',
+    subtitle: '4 packages roll in, one at a time.',
     cards: [
       { icon: 'eye', title: 'Inspect', text: 'Look at every side.' },
       { icon: 'decide', title: 'Decide', text: 'Damaged → reject.' },
@@ -189,15 +198,15 @@ function buildVideoSpec(view) {
 
 function dockStep(key, state, vr) {
   const def = SCENARIO.packages[key];
-  const { min, max } = weightRange(SCENARIO.packages.B);
+  const { min, max } = def.expectedWeightKg ? weightRange(def) : { min: 0, max: 0 };
   const T = (icon, title, subtitle, hints = []) => ({ icon, title, subtitle, hints: vr ? hints : [] });
   switch (state) {
-    case 'waiting': return T('eye', `Pick up ${def.label}`, vr ? 'Look for any damage.' : 'Select Bring to me.', [HINT.grab, HINT.turn]);
+    case 'waiting': return T('eye', `Pick up ${def.label}`, vr ? 'On the arrival pad (left). Look for damage.' : 'Select Bring to me.', [HINT.grab, HINT.turn]);
     case 'inspecting': return T('eye', 'Damaged or intact?', vr ? 'Turn it. Check every side.' : 'Rotate it. Check every side.', [HINT.turn]);
     case 'condition_submitted': return T('decide', 'Accept or reject?', 'Damaged → reject. Intact → accept.');
     case 'rejected': return T('bin', 'Quarantine it', vr ? 'Drop it in the red tote.' : 'Select Quarantine.', [HINT.grab, HINT.release]);
     case 'accepted': return T('scan', 'Scan the label', vr ? 'Label in the green zone, then pull TRIGGER.' : 'Select Scan.', [{ key: 'LABEL', text: 'in green zone' }, HINT.scan]);
-    case 'scanned': return T('scale', 'Weigh it', vr ? 'Set it on the scale.' : 'Select Scale.', [HINT.release]);
+    case 'scanned': return T('scale', 'Weigh it', vr ? 'Set it on the scale. Expected weight is on the monitor.' : 'Select Scale.', [HINT.release]);
     case 'weighed': return T('scale', 'Check the weight', `Is it ${min.toFixed(2)}–${max.toFixed(2)} kg?`);
     case 'weight_confirmed': return T('ship', 'Send it out', vr ? 'Set it on the conveyor.' : 'Select Outbound.', [HINT.release]);
     case 'staged': return T('ship', 'Ship it', vr ? 'Press the green button.' : 'Select Confirm release.');
@@ -242,7 +251,7 @@ function buildDockSpec(view) {
   const footer = [{ id: 'help', label: 'Help' }];
   if (def.condition === 'intact' && engine.stateAtLeast(key, 'accepted')) footer.push({ id: 'release', label: 'Confirm release' });
   return {
-    chip: `Station 2 · ${def.label}`,
+    chip: `Station 2 · ${def.label} · ${engine.scenario.order.indexOf(key) + 1} of ${engine.scenario.order.length}`,
     stepId: `dock:${key}:${STATE_STEP[st]}`,
     stepLabel: `${stepIdx} / ${steps.length}`,
     progress: { i: stepIdx, n: steps.length },
@@ -264,7 +273,8 @@ function packStep(step, vr, e) {
   const extraKnown = extra && e.items[extra].scanned;
   const T = (icon, title, subtitle, hints = []) => ({ icon, title, subtitle, hints: vr ? hints : [] });
   switch (step) {
-    case 'open': return T('scan', 'Open the order', vr ? 'Scan the tote label.' : 'Select Scan tote.', [{ key: 'GRIP', text: 'yellow scanner' }, HINT.scan]);
+    case 'open': return T('scan', S.index ? `Tote ${S.index + 1}: open it` : 'Open the order',
+      vr ? 'Scan the new tote label.' : 'Select Scan tote.', [{ key: 'GRIP', text: 'yellow scanner' }, HINT.scan]);
     case 'scan': return T('scan', 'Scan each item', 'Check them on the order monitor (left).', [HINT.scan]);
     case 'exception': return T('bin', 'Remove the extra item', extraKnown
       ? `The ${S.items[extra].name.toLowerCase()} isn't ordered → yellow bin.`
@@ -320,7 +330,7 @@ export function buildPackSpec(view) {
   const footer = [{ id: 'help', label: 'Help' }];
   if (e.carton) footer.push({ id: 'release', label: 'Confirm release' });
   return {
-    chip: `Station 1 · ${S.order.id}`,
+    chip: `Station 1 · Tote ${S.index + 1} of ${S.count}`,
     stepId: `pack:${step}`,
     stepLabel: `${idx} / ${PACK_STEPS.length}`,
     progress: { i: idx, n: PACK_STEPS.length },
@@ -341,10 +351,10 @@ function buildPackDoneSpec(view) {
     accent: ok ? '#2fae66' : '#e0b12b',
     title: `${r.score} / ${r.maxScore}`,
     titleSize: 72,
-    subtitle: ok ? 'Order packed right. Next: the dock.' : `Practice recommended${r.criticalErrors.length ? ` · ${r.criticalErrors.length} critical` : ''}.`,
+    subtitle: ok ? `All ${view.session.pack.orderCount} totes packed right. Next: the dock.` : `Practice recommended${r.criticalErrors.length ? ` · ${r.criticalErrors.length} critical` : ''}.`,
     feedback: view.feedback,
     buttons: [[
-      { id: 'station:replay-pack', label: 'Replay (new order)' },
+      { id: 'station:replay-pack', label: 'Replay (new totes)' },
       { id: 'station:dock', label: 'Next station', variant: 'primary' },
     ]],
   };
@@ -353,7 +363,6 @@ function buildPackDoneSpec(view) {
 export function buildSessionResultsSpec(view) {
   const r = view.session.results();
   const page = view.resultsPage;
-  const mark = (c) => (c.status === 'passed' ? 'PASS' : c.corrected ? 'MISS, fixed' : 'MISS');
   const station = r.stations.find((s) => s.key === page);
   const ok = r.status === 'proficient';
   const nav = [
@@ -363,14 +372,25 @@ export function buildSessionResultsSpec(view) {
   ].filter(Boolean);
   const buttons = [nav, [{ id: 'help', label: 'Help' }, { id: 'replay', label: 'Replay', variant: 'primary' }]];
   if (station) {
+    // One line per tote / package: all correct, or what was missed.
+    const groups = new Map();
+    for (const c of station.results.checkpoints) {
+      if (!groups.has(c.pkg)) groups.set(c.pkg, []);
+      groups.get(c.pkg).push(c);
+    }
+    const body = [];
+    for (const [pkg, list] of groups) {
+      const name = list[0].label.split(': ')[0] || pkg;
+      const missed = list.filter((c) => c.status !== 'passed');
+      body.push(missed.length
+        ? { text: `✗ ${name}: ${missed.map((c) => `${c.label.split(': ').slice(1).join(': ')}${c.corrected ? ' (fixed)' : ''}`).join(' · ')}`, size: 25, color: '#ffd29b' }
+        : { text: `✓ ${name}: all correct`, size: 25, color: '#9fe3b8' });
+    }
     return {
       chip: `Station ${station.number} · ${station.name}`,
-      stepLabel: `${station.results.score} / ${station.results.maxScore}`,
-      bodySize: 24,
-      body: station.results.checkpoints.map((c) => ({
-        text: `${mark(c)} · ${c.label}`,
-        size: 24, color: c.status === 'passed' ? '#cfd8e1' : '#ffd29b',
-      })),
+      stepLabel: station.skipped ? 'Skipped' : `${station.results.score} / ${station.results.maxScore}`,
+      bodySize: 25,
+      body: station.skipped ? [{ text: 'Skipped for this demo.', size: 25 }] : body,
       buttons,
       buttonHeight: 60,
     };

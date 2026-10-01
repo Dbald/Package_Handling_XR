@@ -30,7 +30,7 @@ const PACK = {
   LABELLED: B('Labelled', 'Put it on the conveyor.'),
   STAGED: B('On the conveyor', 'Confirm release.'),
   PREMATURE_RELEASE: B('Not ready to ship!', 'Seal, weigh and label first.'),
-  RELEASED: B('Shipped!', 'Station 1 complete.'),
+  RELEASED: null, // dynamic: next tote / station done
   NO_READ: B('No read', 'Aim the beam at a barcode.'),
   TAPE_NO_CARTON: B('No carton yet', 'Build one on the scale first.'),
   TAPE_FAR: B('Get closer', 'Start at one end of the top seam.'),
@@ -44,7 +44,7 @@ const DOCK = {
   ACCEPTED_DAMAGED: B('Never accept damage!', 'Damaged → reject.'),
   REJECTED_INTACT: B('It’s intact', 'Good packages get accepted.'),
   DAMAGED_OUTBOUND: B('Never ship damage!', 'Damaged → quarantine.'),
-  QUARANTINED: B('Quarantined', 'Next package.'),
+  QUARANTINED: null, // dynamic: next package rolling in / done
   NOT_APPLICABLE: B('Not for this one', 'Follow the task above.'),
   STAGED: B('On the conveyor', 'Confirm release.'),
   PREMATURE_RELEASE: B('Not ready to ship!', 'Scan and weigh first.'),
@@ -55,7 +55,7 @@ const DOCK = {
   SCANNED: B('Scanned', 'Now weigh it.'),
   WEIGHT_OK: B('Weight OK', 'Send it out.'),
   WEIGHT_WRONG: B('Look again', 'Compare the scale to the range.'),
-  RELEASED: B('Shipped!', 'Great work.'),
+  RELEASED: null, // dynamic: next package rolling in / done
   NOT_ACTIVE: B('One at a time', 'Finish the current package.'),
   PACKAGE_DONE: B('Already done', 'Work on the next one.'),
 };
@@ -89,7 +89,15 @@ export function brief(station, r) {
   if (r.code === 'CARTON_WRONG') b = /small/i.test(r.message) ? B('Too small', 'Check the order monitor.') : B('Too big', 'Use the size on the monitor.');
   if (r.code === 'NO_READ' && /facing away/i.test(r.message)) b = B('No read', 'Turn the barcode toward the scanner.');
   if (r.code === 'NO_READ' && /SCAN ZONE/.test(r.message)) b = B('No read', 'Hold the label in the green zone.');
-  if (r.code === 'DECISION_OK') b = /reject/i.test(r.message) ? B('Rejected', 'Into the quarantine tote.') : B('Accepted', 'Scan its label.');
+  if (r.code === 'DECISION_OK') b = /reject/i.test(r.message) ? B('Rejected', 'Into the quarantine bin.') : B('Accepted', 'Scan its label.');
+  if (station === 'pack' && r.code === 'RELEASED') {
+    const m = /Tote (\d+) of (\d+)/.exec(r.message);
+    b = m ? B('Shipped!', `Tote ${m[1]} of ${m[2]} is rolling in.`) : B('Shipped!', 'All totes done. Station 1 complete.');
+  }
+  if (station === 'dock' && (r.code === 'RELEASED' || r.code === 'QUARANTINED')) {
+    const next = /(Package \w) is rolling in/.exec(r.message);
+    b = B(r.code === 'RELEASED' ? 'Shipped!' : 'Quarantined', next ? `${next[1]} is rolling in.` : 'All packages done.');
+  }
   return {
     title: b?.title ?? TONE_TITLES[r.tone] ?? '',
     text: b?.text ?? firstLine(r.message),

@@ -274,14 +274,34 @@ export class Panel {
 
     // ---- buttons, pinned to the bottom
     this.buttons = [];
-    const rows = (spec.buttons ?? []).filter((r) => r && r.length);
+    // A row is a list of buttons, or { label, note, items } for a labelled
+    // settings row (label column on the left, e.g. "BENCH HEIGHT · 92 cm").
+    const rows = (spec.buttons ?? []).map((r) => (Array.isArray(r) ? { items: r } : r)).filter((r) => r?.items?.length);
     const bh = spec.buttonHeight ?? 74;
     let by = h - pad - rows.length * bh - Math.max(0, rows.length - 1) * gap;
     let bottom = rows.length ? by - gap : h - pad;
+    const labelW = rows.some((r) => r.label) ? 330 : 0;
     for (const row of rows) {
-      const bw = (w - pad * 2 - gap * (row.length - 1)) / row.length;
-      row.forEach((b, i) => {
-        const rect = { ...b, x: pad + i * (bw + gap), y: by, w: bw, h: bh };
+      let x0 = pad;
+      if (row.label) {
+        ctx.fillStyle = '#1a222c';
+        roundRect(ctx, pad, by, labelW - gap, bh, 16);
+        ctx.fill();
+        ctx.fillStyle = '#e0a526';
+        ctx.font = `bold 26px ${FONT}`;
+        const ly = row.note ? by + bh / 2 - 26 : by + bh / 2 - 13;
+        ctx.fillText(fit(ctx, row.label.toUpperCase(), labelW - gap - 36), pad + 18, ly);
+        if (row.note) {
+          ctx.fillStyle = '#ffffff';
+          ctx.font = `bold 30px ${FONT}`;
+          ctx.fillText(fit(ctx, row.note, labelW - gap - 36), pad + 18, ly + 30);
+        }
+      }
+      if (row.label) x0 = pad + labelW;
+      const items = row.items;
+      const bw = (w - pad - x0 - gap * (items.length - 1)) / items.length;
+      items.forEach((b, i) => {
+        const rect = { ...b, x: x0 + i * (bw + gap), y: by, w: bw, h: bh };
         this.drawButton(rect);
         if (b.enabled !== false) this.buttons.push(rect);
       });

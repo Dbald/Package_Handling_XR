@@ -19,29 +19,62 @@ const CARTONS = {
 };
 const CARTON_ORDER = ['S', 'M', 'L'];
 
-// Orders: which items, the extra (mis-picked) item, the system-recommended
-// carton, and where each item sits in the tote and in the packed carton
-// (x, y, z offsets; `rot` = yaw, `stand` = book stood on its spine).
-const ORDERS = [
-  {
-    id: 'ORD-58213', tote: 'TOTE-0417', items: ['mug', 'book'], extra: 'case', carton: 'M',
+// Orders: which items, the extra (mis-picked) item (if any), the
+// system-recommended carton, and where each item sits in the tote and in the
+// packed carton (x, y, z offsets; `rot` = yaw, `stand` = book on its spine).
+// A shift is four totes; each run follows the carton pattern M, S, L, M and
+// mixes in fragile items, mis-picks and one clean tote.
+const ORDERS = {
+  'ORD-58213': {
+    tote: 'TOTE-0417', items: ['mug', 'book'], extra: 'case', carton: 'M',
     tote_slots: { mug: [-0.1, 0.08, -0.04], book: [0.07, 0.04, 0.04], case: [0.07, 0.0565, 0.02, 0.25] },
     carton_slots: { mug: [-0.07, 0.066, 0.03], book: [0.12, 0.086, 0, 'stand'] },
   },
-  {
-    id: 'ORD-58257', tote: 'TOTE-0422', items: ['charger', 'cable'], extra: 'book', carton: 'S',
+  'ORD-58257': {
+    tote: 'TOTE-0422', items: ['charger', 'cable'], extra: 'book', carton: 'S',
     tote_slots: { charger: [-0.11, 0.05, -0.05], cable: [0.08, 0.03, 0.07], book: [0.06, 0.04, -0.06] },
     carton_slots: { charger: [-0.05, 0.036, 0], cable: [0.05, 0.016, 0, Math.PI / 2] },
   },
-  {
-    id: 'ORD-58301', tote: 'TOTE-0430', items: ['lamp', 'cable'], extra: 'charger', carton: 'L',
+  'ORD-58301': {
+    tote: 'TOTE-0430', items: ['lamp', 'cable'], extra: 'charger', carton: 'L',
     tote_slots: { lamp: [0, 0.085, -0.06], cable: [-0.08, 0.03, 0.08], charger: [0.09, 0.05, 0.08] },
     carton_slots: { lamp: [0, 0.071, -0.08], cable: [-0.1, 0.016, 0.1] },
   },
+  'ORD-58344': {
+    tote: 'TOTE-0436', items: ['book', 'charger', 'cable'], extra: null, carton: 'M',
+    tote_slots: { book: [-0.06, 0.04, 0.03], charger: [0.11, 0.05, -0.06], cable: [0.115, 0.03, 0.07] },
+    carton_slots: { book: [-0.04, 0.026, 0], charger: [0.11, 0.036, 0, Math.PI / 2], cable: [-0.04, 0.056, 0] },
+  },
+  'ORD-61102': {
+    tote: 'TOTE-0511', items: ['mug', 'charger'], extra: 'cable', carton: 'M',
+    tote_slots: { mug: [-0.1, 0.08, -0.03], charger: [0.05, 0.05, -0.06], cable: [0.08, 0.03, 0.07] },
+    carton_slots: { mug: [-0.07, 0.066, 0.03], charger: [0.08, 0.036, -0.02] },
+  },
+  'ORD-61145': {
+    tote: 'TOTE-0518', items: ['case', 'cable'], extra: 'mug', carton: 'S',
+    tote_slots: { case: [-0.09, 0.0325, 0.02], cable: [0.03, 0.03, 0.06], mug: [0.1, 0.08, -0.06] },
+    carton_slots: { case: [0, 0.0185, 0.02, Math.PI / 2], cable: [0, 0.041, 0] },
+  },
+  'ORD-61190': {
+    tote: 'TOTE-0524', items: ['lamp', 'book'], extra: 'case', carton: 'L',
+    tote_slots: { lamp: [0, 0.085, -0.06], book: [0.02, 0.17, -0.06], case: [0.05, 0.0325, 0.07, Math.PI / 2] },
+    carton_slots: { lamp: [0, 0.071, -0.08], book: [0, 0.026, 0.09] },
+  },
+  'ORD-61233': {
+    tote: 'TOTE-0530', items: ['book', 'charger'], extra: 'cable', carton: 'M',
+    tote_slots: { book: [-0.06, 0.04, 0.03], charger: [0.11, 0.05, -0.06], cable: [0.115, 0.03, 0.07] },
+    carton_slots: { book: [-0.04, 0.026, 0], charger: [0.11, 0.036, 0, Math.PI / 2] },
+  },
+};
+
+// Each run (shift) is four totes. Replays move to the next run.
+const RUNS = [
+  ['ORD-58213', 'ORD-58257', 'ORD-58301', 'ORD-58344'],
+  ['ORD-61102', 'ORD-61145', 'ORD-61190', 'ORD-61233'],
 ];
 
 const BASE = {
-  version: '1.1.0',
+  version: '1.2.0',
   station: 'Station 1',
   title: 'Pack-Out',
   cartons: CARTONS,
@@ -67,7 +100,7 @@ const BASE = {
   },
   proficiency: { minScore: 80, maxCriticalErrors: 0 },
   rules: [
-    'Scan the tote label first. It opens the order on the ORDER MONITOR (left).',
+    'Four totes per shift. Scan each tote label first: it opens that order on the ORDER MONITOR (left).',
     'Scan every item and compare it with the monitor. Anything NOT ON ORDER goes to the EXCEPTION bin.',
     'Use the carton size the monitor recommends: the smallest that fits everything.',
     'Fragile items need void fill (air pillows) before the carton is sealed.',
@@ -76,13 +109,24 @@ const BASE = {
   ],
 };
 
-export const PACK_ORDER_COUNT = ORDERS.length;
+export const PACK_RUN_COUNT = RUNS.length;
 export const PACK_CATALOG = CATALOG;
+export const PACK_ORDERS = ORDERS;
 
-/** Full scenario for order `index` (wraps around). */
-export function packScenario(index = 0) {
-  const o = ORDERS[((index % ORDERS.length) + ORDERS.length) % ORDERS.length];
-  const itemOrder = [...o.items, o.extra];
+const CHECKPOINT_BASE = Object.fromEntries(BASE.checkpoints.map((c) => [c.id, c]));
+
+/** Checkpoints that apply to an order (no mis-pick → no exception check, etc.). */
+function orderCheckpoints(o, n) {
+  const fragile = o.items.some((k) => CATALOG[k].fragile);
+  return BASE.checkpoints
+    .filter((c) => (c.id !== 'PK_EXCEPTION' || o.extra) && (c.id !== 'PK_DUNNAGE' || fragile))
+    .map((c) => ({ ...CHECKPOINT_BASE[c.id], id: `T${n}_${c.id}`, pkg: `T${n}`, label: `Tote ${n}: ${c.label}` }));
+}
+
+/** One order (tote) of a run, as the engine and station see it. */
+function orderScenario(id, index, count, run) {
+  const o = ORDERS[id];
+  const itemOrder = o.extra ? [...o.items, o.extra] : [...o.items];
   const items = {};
   for (const k of itemOrder) items[k] = { ...CATALOG[k], onOrder: k !== o.extra };
   const largest = o.items.map((k) => CATALOG[k]).sort((a, b) => Math.max(...b.size) - Math.max(...a.size))[0];
@@ -94,12 +138,17 @@ export function packScenario(index = 0) {
     if (i > correctIdx) why = 'Too large: oversized cartons are billed by dimensional weight and need far more void fill. Use the size the monitor recommends.';
     cartons[k] = { ...CARTONS[k], why };
   });
-  const expected = o.items.reduce((a, k) => a + CATALOG[k].weightKg, 0) + CARTONS[o.carton].weightKg + 2 * BASE.dunnageKg;
+  const fragile = o.items.some((k) => CATALOG[k].fragile);
+  const expected = o.items.reduce((a, k) => a + CATALOG[k].weightKg, 0) + CARTONS[o.carton].weightKg + (fragile ? 2 * BASE.dunnageKg : 0);
   return Object.freeze({
     ...BASE,
-    id: `dg-pack-out/${o.id}`,
-    variant: index,
-    order: { id: o.id, tote: o.tote, service: 'Standard Ground' },
+    id: run.id,
+    variant: run.variant,
+    checkpoints: run.checkpoints,
+    index,
+    count,
+    cpPrefix: `T${index + 1}_`,
+    order: { id, tote: o.tote, service: 'Standard Ground' },
     items,
     itemOrder,
     cartons,
@@ -110,7 +159,22 @@ export function packScenario(index = 0) {
   });
 }
 
-export const PACK_SCENARIO = packScenario(0);
+/**
+ * A Station 1 run: four totes processed one after another. `checkpoints`
+ * holds every tote's applicable checkpoints (ids prefixed T1_…T4_), so the
+ * station is scored across the whole shift.
+ */
+export function packRun(variant = 0) {
+  const v = ((variant % RUNS.length) + RUNS.length) % RUNS.length;
+  const ids = RUNS[v];
+  const run = { id: `dg-pack-out/run-${v + 1}`, variant: v };
+  run.checkpoints = Object.freeze(ids.flatMap((id, i) => orderCheckpoints(ORDERS[id], i + 1)));
+  run.orders = Object.freeze(ids.map((id, i) => orderScenario(id, i, ids.length, run)));
+  return Object.freeze({ ...BASE, ...run });
+}
+
+export const PACK_RUN = packRun(0);
+export const PACK_SCENARIO = PACK_RUN.orders[0];
 
 export function packWeightRange(s = PACK_SCENARIO) {
   return {

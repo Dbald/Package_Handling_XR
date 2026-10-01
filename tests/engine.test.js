@@ -20,25 +20,40 @@ function start(engine) {
   engine.startExercise();
 }
 
-function perfectA(e) {
-  e.inspect('A', ctx);
-  e.submitCondition('A', 'damaged', ctx);
-  e.decide('A', 'reject', ctx);
-  e.place('A', 'quarantine', ctx);
+function perfectDamaged(e, k) {
+  e.inspect(k, ctx);
+  e.submitCondition(k, 'damaged', ctx);
+  e.decide(k, 'reject', ctx);
+  e.place(k, 'quarantine', ctx);
 }
 
-function perfectB(e) {
-  e.inspect('B', ctx);
-  e.submitCondition('B', 'intact', ctx);
-  e.decide('B', 'accept', ctx);
-  e.scan('B', { aligned: true }, ctx);
-  e.place('B', 'scale', ctx);
-  e.confirmWeight('B', 'within', ctx);
-  e.place('B', 'outbound', ctx);
-  e.release('B', ctx);
+function perfectIntact(e, k) {
+  e.inspect(k, ctx);
+  e.submitCondition(k, 'intact', ctx);
+  e.decide(k, 'accept', ctx);
+  e.scan(k, { aligned: true }, ctx);
+  e.place(k, 'scale', ctx);
+  e.confirmWeight(k, 'within', ctx);
+  e.place(k, 'outbound', ctx);
+  e.release(k, ctx);
 }
 
-test('correct two-package flow scores 100 with no critical errors', () => {
+const perfectA = (e) => perfectDamaged(e, 'A');
+const perfectB = (e) => perfectIntact(e, 'B');
+/** Packages C (intact) and D (damaged), done right: finishes the station. */
+function finishCD(e) {
+  perfectIntact(e, 'C');
+  perfectDamaged(e, 'D');
+}
+
+test('four packages arrive in order: damaged, intact, intact, damaged', () => {
+  assert.deepEqual(SCENARIO.order, ['A', 'B', 'C', 'D']);
+  assert.deepEqual(SCENARIO.order.map((k) => SCENARIO.packages[k].condition), ['damaged', 'intact', 'intact', 'damaged']);
+  assert.equal(SCENARIO.checkpoints.length, 20);
+  assert.equal(new Set(SCENARIO.checkpoints.map((c) => c.id)).size, 20, 'checkpoint ids are unique');
+});
+
+test('correct four-package flow scores 100 with no critical errors', () => {
   const { engine: e } = makeEngine();
   start(e);
   perfectA(e);
@@ -46,6 +61,17 @@ test('correct two-package flow scores 100 with no critical errors', () => {
   assert.equal(e.activePackage(), 'B');
   perfectB(e);
   assert.equal(e.packageState('B'), 'outbound');
+  assert.equal(e.activePackage(), 'C');
+  assert.equal(e.isComplete(), false, 'not done until every package is handled');
+  perfectIntact(e, 'C');
+  assert.equal(e.activePackage(), 'D');
+  const d = e.inspect('D', ctx);
+  assert.equal(d.ok, true);
+  const cond = e.submitCondition('D', 'damaged', ctx);
+  assert.match(cond.message, /back side/);
+  e.decide('D', 'reject', ctx);
+  e.place('D', 'quarantine', ctx);
+  assert.equal(e.isComplete(), true);
   const r = e.results();
   assert.equal(r.score, 100);
   assert.equal(r.maxScore, 100);
@@ -68,8 +94,9 @@ test('accepting the damaged package is blocked, critical, and recoverable', () =
   assert.equal(e.decide('A', 'reject', ctx).ok, true);
   assert.equal(e.place('A', 'quarantine', ctx).ok, true);
   perfectB(e);
+  finishCD(e);
   const r = e.results();
-  assert.equal(r.score, 90);
+  assert.equal(r.score, 95, 'one missed checkpoint of twenty');
   assert.equal(r.criticalErrors.length, 1);
   assert.equal(r.criticalErrors[0].type, 'ACCEPTED_DAMAGED');
   assert.equal(r.status, 'practice', 'critical error retained through completion');
@@ -96,9 +123,10 @@ test('early outbound release is blocked, fails the final two checkpoints, and st
   e.confirmWeight('B', 'within', ctx);
   e.place('B', 'outbound', ctx);
   e.release('B', ctx);
+  finishCD(e);
   const r = e.results();
   assert.equal(r.complete, true);
-  assert.equal(r.score, 80);
+  assert.equal(r.score, 90);
   assert.equal(r.criticalErrors.length, 1);
   assert.equal(r.criticalErrors[0].type, 'PREMATURE_RELEASE');
   assert.equal(r.status, 'practice');
@@ -123,10 +151,11 @@ test('rejecting the intact package allows correction without first-attempt point
   e.confirmWeight('B', 'within', ctx);
   e.place('B', 'outbound', ctx);
   e.release('B', ctx);
+  finishCD(e);
   const r = e.results();
-  assert.equal(r.score, 90);
+  assert.equal(r.score, 95);
   assert.equal(r.criticalErrors.length, 0);
-  assert.equal(r.status, 'proficient', '90 with no critical errors meets the demo threshold');
+  assert.equal(r.status, 'proficient', '95 with no critical errors meets the demo threshold');
 });
 
 test('repeated invalid actions do not duplicate score changes, criticals, or transitions', () => {
@@ -149,7 +178,7 @@ test('repeated invalid actions do not duplicate score changes, criticals, or tra
   e.decide('B', 'accept', ctx);
   for (let i = 0; i < 4; i++) e.scan('B', { aligned: true }, ctx);
   assert.equal(e.packageState('B'), 'scanned');
-  assert.equal(e.score(), 30);
+  assert.equal(e.score(), 15, 'three of twenty checkpoints');
 });
 
 test('actions are blocked while paused and the timer stops', () => {
@@ -175,6 +204,7 @@ test('timer does not run during setup or briefing, and stops at completion', () 
   clock.advance(1_000);
   perfectA(e);
   perfectB(e);
+  finishCD(e);
   clock.advance(99_000);
   assert.equal(e.elapsedMs(), 1_000);
 });
@@ -203,7 +233,7 @@ test('reset restores every package, checkpoint, score, timer and log', () => {
   assert.notEqual(e.sessionId, first);
   assert.equal(e.phase, 'setup');
   assert.equal(e.packageState('A'), 'waiting');
-  assert.equal(e.packageState('B'), 'waiting');
+  for (const k of SCENARIO.order) assert.equal(e.packageState(k), 'waiting');
   assert.equal(e.score(), 0);
   assert.equal(e.criticals.length, 0);
   assert.equal(e.log.length, 0);
@@ -238,8 +268,9 @@ test('weighing before scanning fails the scan-order checkpoints and is blocked',
   e.confirmWeight('B', 'within', ctx);
   e.place('B', 'outbound', ctx);
   e.release('B', ctx);
+  finishCD(e);
   const res = e.results();
-  assert.equal(res.score, 80);
+  assert.equal(res.score, 90);
   assert.equal(res.criticalErrors.length, 0);
   assert.equal(res.status, 'proficient');
 });
@@ -270,7 +301,8 @@ test('a wrong weight confirmation is corrected but loses first-attempt points', 
   assert.equal(e.confirmWeight('B', 'within', ctx).ok, true);
   e.place('B', 'outbound', ctx);
   e.release('B', ctx);
-  assert.equal(e.results().score, 90);
+  finishCD(e);
+  assert.equal(e.results().score, 95);
 });
 
 test('placing a damaged package outbound is critical even before a decision', () => {
@@ -316,6 +348,7 @@ test('five replay cycles leave no stale state', () => {
     if (i % 2) e.place('B', 'outbound', ctx); // B is locked here: must not score or leak
     perfectA(e);
     perfectB(e);
+    finishCD(e);
     assert.equal(e.results().score, 100);
     assert.equal(e.results().status, 'proficient');
     e.reset();
@@ -341,5 +374,6 @@ test('removing a staged package from the conveyor un-stages it; release then nee
   assert.equal(e.criticals.length, 0);
   e.place('B', 'outbound', ctx);
   e.release('B', ctx);
+  finishCD(e);
   assert.equal(e.results().score, 100);
 });

@@ -62,7 +62,7 @@ export class App {
     this.world = buildWorld(SCENARIO);
     this.scene.add(this.world.worldRoot);
 
-    this.mainPanel = new Panel({ width: 1.3, height: 0.86, name: 'main-panel' });
+    this.mainPanel = new Panel({ width: LAYOUT.panel.w, height: 0.86, name: 'main-panel' });
     this.console = new InstructionConsole(this.mainPanel);
     this.video = new VideoPlayer(this, this.console);
     // "PULL TRIGGER" sign over the Station 2 scan zone, lit while a label is lined up.
@@ -122,6 +122,10 @@ export class App {
     this.transition = null;
 
     for (const src of [this.session, this.session.pack, this.session.dock]) src.on((evt) => this.onEngineEvent(evt));
+    // Station 2: when a package is finished, the next one rolls in from the inbound conveyor.
+    this.session.dock.on((evt) => {
+      if (evt.type === 'action' && evt.result?.ok && ['QUARANTINED', 'RELEASED'].includes(evt.result.code)) this.scheduleRollIn();
+    });
     this.placeMainPanel();
     this.applyHeight();
     this.resetScene();
@@ -345,10 +349,9 @@ export class App {
     if (this.session.phase !== 'pack') return null;
     for (const c of this.xrInput.controllers) if (c.held && c.held.startsWith('pk:')) this.freezeHeld(c, 'move');
     this.packOrder = (this.packOrder ?? 0) + 1;
-    this.pack.setOrder(this.packOrder);
+    this.pack.setRun(this.packOrder);
     this.session.replayPack();
-    const o = this.pack.s.order;
-    return { tone: 'info', message: `New order ${o.id} in tote ${o.tote}. Pick up the scanner and open it.` };
+    return { tone: 'info', title: 'New shift', message: 'Four new totes. Scan the first tote label.' };
   }
 
   /** What the controller-attached hint should say for this hand, or null. */
@@ -480,7 +483,8 @@ export class App {
       const p = this.world.packages[key];
       this.phys[key].zone = 'released';
       const end = new THREE.Vector3(LAYOUT.conveyor.x, p.group.position.y, LAYOUT.conveyor.endZ);
-      this.tween(p.group, { pos: end, quat: IDENTITY, dur: 3.2, ease: 'linear', conveyor: true });
+      const g = p.group;
+      this.tween(g, { pos: end, quat: IDENTITY, dur: 3.2, ease: 'linear', conveyor: true, onDone: () => { g.visible = false; } });
     }
     return r;
   }
@@ -746,10 +750,16 @@ export class App {
     this.refreshUI();
   }
 
-  slotFor(key, zone) {
+  slotFor(key, zone, slot = 0) {
     const size = PACKAGE_SIZES[key];
     if (zone === 'bench') return new THREE.Vector3(LAYOUT.mat.x, size[1] / 2, LAYOUT.mat.z);
-    if (zone === 'incoming') return new THREE.Vector3(LAYOUT.incoming.x, size[1] / 2, LAYOUT.incoming.z);
+    if (zone === 'queue') return new THREE.Vector3(LAYOUT.inbound.queue[slot], size[1] / 2, LAYOUT.inbound.z);
+    if (zone === 'quarantine') {
+      // Rejected packages stack in the drop bin.
+      const below = SCENARIO.order.filter((k) => k !== key && this.phys[k]?.zone === 'quarantine')
+        .reduce((a, k) => a + PACKAGE_SIZES[k][1], 0);
+      return this.world.zones.quarantine.slot(size, below);
+    }
     return this.world.zones[zone].slot(size);
   }
 
@@ -758,6 +768,27 @@ export class App {
     if (p.group.parent !== this.station) this.station.attach(p.group);
     this.tween(p.group, { pos: this.slotFor(key, zone), quat: IDENTITY, dur: 0.3 });
     this.phys[key].zone = zone;
+  }
+
+  /** Station 2: after a package is finished, the queue advances one spot. */
+  scheduleRollIn() {
+    this.rollInAt = performance.now() + (this.settings.reducedMotion ? 0 : 700);
+  }
+
+  rollIn() {
+    this.rollInAt = null;
+    const queued = SCENARIO.order.filter((k) => this.phys[k].zone === 'queue')
+      .sort((a, b) => this.phys[a].slot - this.phys[b].slot);
+    if (!queued.length) return;
+    queued.forEach((k, i) => {
+      const g = this.world.packages[k].group;
+      const toBench = i === 0;
+      const pos = toBench ? this.slotFor(k, 'bench') : this.slotFor(k, 'queue', i - 1);
+      this.phys[k] = toBench ? { zone: 'bench' } : { zone: 'queue', slot: i - 1 };
+      this.tween(g, { pos, quat: IDENTITY, dur: toBench ? 1.5 : 1.2, ease: 'out' });
+    });
+    this.sfx.play('conveyor');
+    this.refreshUI();
   }
 
   /** Practice box sits on the Station 1 pack scale during setup. */
@@ -898,7 +929,7 @@ export class App {
     this.session.reset();
     this.resetScene();
     this.packOrder = 0;
-    this.pack.setOrder(0);
+    this.pack.setRun(0);
     this.placeMainPanel();
     this.recenter();
     this.feedback = { tone: 'info', text: 'New session started. Everything has been reset.' };
@@ -911,13 +942,15 @@ export class App {
     for (const key of SCENARIO.order) {
       const p = this.world.packages[key];
       this.station.attach(p.group);
-      const zone = key === SCENARIO.order[0] ? 'bench' : 'incoming';
-      p.group.position.copy(this.slotFor(key, zone));
+      // First package waits on the arrival pad; the rest queue on the inbound conveyor.
+      const i = SCENARIO.order.indexOf(key);
+      this.phys[key] = i === 0 ? { zone: 'bench' } : { zone: 'queue', slot: i - 1 };
+      p.group.position.copy(this.slotFor(key, this.phys[key].zone, this.phys[key].slot));
       p.group.quaternion.identity();
       p.group.visible = true;
-      this.phys[key] = { zone };
       this.holders[key] = null;
     }
+    this.rollInAt = null;
     const practice = this.world.practice;
     this.pack.group.attach(practice);
     practice.position.copy(this.practiceHome());
@@ -1066,7 +1099,7 @@ export class App {
       if (exclude !== key && this.phys[key].zone !== 'held') list.push(this.world.packages[key].mesh);
     }
     if (this.world.practice.visible && exclude !== 'practice') list.push(this.world.practice.children[0]);
-    list.push(this.world.releaseBtn, this.world.plate, this.world.scannerHead);
+    list.push(this.world.releaseBtn, this.world.plate, this.world.scannerHead, ...this.world.heightSwitch.buttons, this.world.receiving.mesh);
     return list;
   }
 
@@ -1114,6 +1147,10 @@ export class App {
     const pm = this.world.practice.children[0];
     pm.material.emissive.setHex(hot.has(pm) || hot.has('practice') ? 0x333333 : 0);
     this.world.releaseBtn.material.emissive.setHex(hot.has(this.world.releaseBtn) ? 0x1f5a36 : 0);
+    for (const b of [...this.world.heightSwitch.buttons, ...this.pack.w.heightSwitch.buttons]) {
+      const on = hot.has(b) || hot.has(b.userData.action);
+      b.material.emissive.setHex(on ? 0x2a4a7a : 0);
+    }
     this.pack.setHover(hot);
 
     const tag = this.world.hoverTag;
@@ -1136,7 +1173,6 @@ export class App {
 
   updateInstruments(now, slow = true) {
     const { scaleScreen, scannerScreen, scanZone } = this.world;
-    const B = SCENARIO.packages.B;
     const flash = this.scannerFlash && this.scannerFlash.until > now ? this.scannerFlash : null;
     // Scan-zone feedback (per frame): bright when a held barcode is aligned or just scanned.
     let aligned = false;
@@ -1151,32 +1187,75 @@ export class App {
     scanZone.fill.material.opacity = glow ? 0.25 : 0.08;
     scanZone.edges.material.color.setHex(glow ? 0xb6ffd6 : 0x39d98a);
     if (!slow) return;
-    const { min, max } = weightRange(B);
+    const e = this.engine;
+    const shownKey = e.activePackage() ?? (e.isComplete() ? null : SCENARIO.order.find((k) => !e.isFinished(k)));
     const onScale = SCENARIO.order.find((k) => this.phys[k].zone === 'scale');
-    const range = { text: `EXPECTED ${min.toFixed(2)}–${max.toFixed(2)} kg`, size: 28, color: '#cfe8da' };
-    if (onScale && SCENARIO.packages[onScale].measuredWeightKg) {
-      const st = this.engine.packageState(onScale);
-      const confirmed = this.engine.stateAtLeast(onScale, 'weight_confirmed');
+    const scaleDef = onScale ? SCENARIO.packages[onScale] : null;
+    if (scaleDef?.measuredWeightKg) {
+      const { min, max } = weightRange(scaleDef);
+      const st = e.packageState(onScale);
+      const confirmed = e.stateAtLeast(onScale, 'weight_confirmed');
       scaleScreen.show([
-        { text: `${SCENARIO.packages[onScale].measuredWeightKg.toFixed(2)} kg`, size: 70, bold: true },
-        range,
+        { text: `${scaleDef.measuredWeightKg.toFixed(2)} kg`, size: 70, bold: true },
+        { text: `EXPECTED ${min.toFixed(2)}–${max.toFixed(2)} kg`, size: 28, color: '#cfe8da' },
         { text: confirmed ? 'CONFIRMED: IN RANGE' : st === 'weighed' ? 'CONFIRM ON PANEL' : 'STABLE', size: 26, color: confirmed ? '#9dffc9' : '#ffd97a' },
       ]);
     } else {
-      scaleScreen.show([{ text: '0.00 kg', size: 70, bold: true, color: '#6fae8c' }, range, { text: 'READY', size: 26, color: '#6fae8c' }]);
+      scaleScreen.show([{ text: '0.00 kg', size: 70, bold: true, color: '#6fae8c' }, { text: 'READY', size: 26, color: '#6fae8c' }]);
     }
-    const scanned = this.engine.stateAtLeast('B', 'scanned') && this.engine.phase !== 'setup';
+    const def = shownKey ? SCENARIO.packages[shownKey] : null;
+    const scanned = def && def.condition === 'intact' && e.stateAtLeast(shownKey, 'scanned') && e.phase !== 'setup';
     if (flash && !flash.ok) {
       scannerScreen.show([{ text: 'NO READ', size: 44, bold: true, color: '#ffb36b' }, { text: 'align barcode in zone', size: 24, color: '#ffb36b' }], { bg: '#1a0e05' });
     } else if (scanned) {
-      scannerScreen.show([{ text: 'SCAN OK', size: 40, bold: true }, { text: B.id, size: 30 }]);
+      scannerScreen.show([{ text: 'SCAN OK', size: 40, bold: true }, { text: def.id, size: 30 }]);
     } else {
       scannerScreen.show([{ text: 'READY', size: 44, bold: true, color: '#9fc7ff' }, { text: 'present barcode', size: 26, color: '#9fc7ff' }], { bg: '#070d18' });
+    }
+    // Receiving monitor: queue + the package at the bench (details after scan).
+    let card = 'done';
+    if (def) {
+      const st = e.packageState(shownKey);
+      if (['waiting', 'inspecting', 'condition_submitted'].includes(st)) card = 'inspect';
+      else if (st === 'rejected') card = 'quarantine';
+      else if (st === 'accepted') card = 'scan';
+      else card = 'details';
+    }
+    const range = def?.expectedWeightKg ? weightRange(def) : null;
+    this.world.receiving.show({
+      index: shownKey ? SCENARIO.order.indexOf(shownKey) : SCENARIO.order.length,
+      count: SCENARIO.order.length,
+      queue: SCENARIO.order.map((k) => {
+        let status = 'waiting';
+        if (e.isFinished(k)) status = SCENARIO.packages[k].condition === 'damaged' ? 'quarantined' : 'shipped';
+        else if (k === shownKey && this.phys[k].zone !== 'queue') status = 'bench';
+        return { key: k, label: SCENARIO.packages[k].label, status };
+      }),
+      active: def ? {
+        label: def.label, id: def.id, from: def.from, contents: def.contents ?? [], fragile: !!def.fragile,
+        range: range ? `${range.min.toFixed(2)}–${range.max.toFixed(2)}` : '', card,
+      } : null,
+      weight: scaleDef?.measuredWeightKg ?? null,
+      weightStatus: onScale ? (e.stateAtLeast(onScale, 'weight_confirmed') ? '✓ IN RANGE' : e.packageState(onScale) === 'weighed' ? 'CONFIRM WEIGHT' : '') : '',
+    });
+    // Bench-height readouts (both stations).
+    const cm = `${Math.round(this.settings.benchHeight * 100)} cm`;
+    for (const sw of [this.world.heightSwitch, this.pack.w.heightSwitch]) {
+      sw?.readout.show([{ text: cm, size: 150, bold: true, color: '#ffffff' }], { bg: '#0b1016', border: '#0b1016' });
     }
   }
 
   updateMarker(t) {
     const { marker, markerTag } = this.world;
+    if (this.session.phase === 'setup' && !this.session.isPaused()) {
+      // Point out the bench-height switch while the learner gets comfortable.
+      const H = LAYOUT.heightSwitch;
+      marker.position.set(H.x, 0.07 + (this.settings.reducedMotion ? 0 : Math.sin(t * 3) * 0.012), H.z + 0.06);
+      marker.visible = true;
+      markerTag.set('BENCH HEIGHT ▲▼');
+      markerTag.mesh.lookAt(this.viewerPose().pos);
+      return;
+    }
     if (this.stationKey === 'pack') {
       const pm = !this.session.isPaused() ? this.pack.markerPose() : null;
       marker.visible = !!pm;
@@ -1210,7 +1289,7 @@ export class App {
       pos = v1.clone().add(v2.set(0, PACKAGE_SIZES[key][1] / 2 + 0.1, 0));
     } else {
       pos = {
-        quarantine: new THREE.Vector3(T.x, 0.46, T.z),
+        quarantine: new THREE.Vector3(T.x, 0.36, T.z),
         scanZone: new THREE.Vector3(Z.x, Z.y + Z.h / 2 + 0.1, Z.z),
         scale: new THREE.Vector3(S.x, 0.36, S.z),
         scaleScreen: new THREE.Vector3(S.x - 0.25, 0.1, S.z + S.d / 2 + 0.05),
@@ -1234,7 +1313,8 @@ export class App {
       this.station.worldToLocal(v1);
       const zone = this.phys[key].zone;
       let surface;
-      if (zone === 'quarantine') surface = 0.021;
+      if (zone === 'quarantine') surface = LAYOUT.tote.floor + 0.001;
+      else if (zone === 'queue') surface = 0.001;
       else if (zone === 'scale') surface = LAYOUT.scale.top;
       else if (zone === 'outbound' || zone === 'released') surface = LAYOUT.conveyor.top + 0.001;
       else if (this.overBench(v1)) surface = 0.001;
@@ -1242,7 +1322,8 @@ export class App {
       const lift = Math.max(0, v1.y - p.size[1] / 2 - surface);
       p.shadow.position.set(v1.x, surface + 0.002, v1.z);
       p.shadow.material.opacity = 0.35 * THREE.MathUtils.clamp(1 - lift / 0.6, 0.15, 1);
-      p.shadow.visible = p.group.visible;
+      // Stacked rejects in the bin: no blob shadow (it would float on the box below).
+      p.shadow.visible = p.group.visible && !(zone === 'quarantine' && v1.y - p.size[1] / 2 > surface + 0.02);
     }
   }
 
@@ -1253,6 +1334,7 @@ export class App {
     this.frameNo = (this.frameNo ?? 0) + 1;
     this.perf?.sample(now);
     this.updateTweens(dt);
+    if (this.rollInAt != null && now >= this.rollInAt) this.rollIn();
     if (this.xr) {
       if (this.pendingRecenter > 0 && --this.pendingRecenter === 0) this.recenter();
       this.xrInput.update(dt, xrFrame);

@@ -15,7 +15,7 @@ export class BaseEngine {
     this.now = now;
     this.idGen = idGen;
     this.listeners = new Set();
-    this.maxScore = scenario.checkpoints.reduce((s, c) => s + c.points, 0);
+    this.maxScore = 100; // scores are the share of checkpoint points earned
     this.reset();
   }
 
@@ -114,12 +114,15 @@ export class BaseEngine {
 
   // ------------------------------------------------------------------ scoring
 
+  /** Share of checkpoint points earned, 0–100 (stations differ in checkpoint count). */
   score() {
+    let earned = 0;
     let total = 0;
     for (const cp of this.scenario.checkpoints) {
-      if (this.checkpoints[cp.id].status === 'passed') total += cp.points;
+      total += cp.points;
+      if (this.checkpoints[cp.id].status === 'passed') earned += cp.points;
     }
-    return total;
+    return total ? Math.round((100 * earned) / total) : 0;
   }
 
   isComplete() {

@@ -3,48 +3,87 @@
 // All rules here are SYNTHETIC DEMO RULES — a customer SME must approve
 // replacements before operational training use (PRD §4).
 
+// Packages arrive one at a time on the inbound conveyor, in `order`.
+const PACKAGES = {
+  A: {
+    key: 'A',
+    id: 'PKG-A-1042',
+    label: 'Package A',
+    condition: 'damaged',
+    damage: 'corner',
+    evidence: 'Crushed and torn top corner',
+    from: 'Northwind Supply',
+  },
+  B: {
+    key: 'B',
+    id: 'PKG-B-2087',
+    label: 'Package B',
+    condition: 'intact',
+    barcode: 'DG2087-4415',
+    from: 'Atlas Books',
+    contents: ['Hardcover book × 4'],
+    expectedWeightKg: 5.0,
+    toleranceKg: 0.2,
+    measuredWeightKg: 4.96,
+  },
+  C: {
+    key: 'C',
+    id: 'PKG-C-3315',
+    label: 'Package C',
+    condition: 'intact',
+    barcode: 'DG3315-7702',
+    from: 'Brightline Home',
+    contents: ['Desk lamp × 1', 'USB-C cable × 2'],
+    fragile: true,
+    expectedWeightKg: 2.4,
+    toleranceKg: 0.15,
+    measuredWeightKg: 2.43,
+  },
+  D: {
+    key: 'D',
+    id: 'PKG-D-4471',
+    label: 'Package D',
+    condition: 'damaged',
+    damage: 'side',
+    evidence: 'Punctured and torn on the back side',
+    from: 'Coastal Parts Co.',
+  },
+};
+const ORDER = ['A', 'B', 'C', 'D'];
+
+// Checkpoints per package (PRD §8): damaged packages are scored on condition,
+// rejection and quarantine; intact ones on the full receive-and-ship flow.
+// A station's score is the share of checkpoint points earned (0–100).
+function packageCheckpoints(def) {
+  const k = def.key;
+  const L = def.label;
+  if (def.condition === 'damaged') {
+    return [
+      { id: `${k}_CONDITION`, pkg: k, points: 10, label: `${L}: spot the damage` },
+      { id: `${k}_REJECT`, pkg: k, points: 10, label: `${L}: reject it` },
+      { id: `${k}_QUARANTINE`, pkg: k, points: 10, label: `${L}: quarantine it` },
+    ];
+  }
+  return [
+    { id: `${k}_CONDITION`, pkg: k, points: 10, label: `${L}: identify it as intact` },
+    { id: `${k}_ACCEPT`, pkg: k, points: 10, label: `${L}: accept it` },
+    { id: `${k}_SCAN_FIRST`, pkg: k, points: 10, label: `${L}: scan before weighing` },
+    { id: `${k}_WEIGH_AFTER_SCAN`, pkg: k, points: 10, label: `${L}: weigh after the scan` },
+    { id: `${k}_WEIGHT_CONFIRM`, pkg: k, points: 10, label: `${L}: confirm the weight is in range` },
+    { id: `${k}_OUTBOUND`, pkg: k, points: 10, label: `${L}: route outbound after every check` },
+    { id: `${k}_NO_PREMATURE`, pkg: k, points: 10, label: `${L}: no early release` },
+  ];
+}
+
 export const SCENARIO = Object.freeze({
   id: 'dg-package-handling-demo',
-  version: '1.1.0',
+  version: '1.2.0',
   title: 'Package Handling Lab',
   org: 'Devinci Global',
 
-  // Packages are processed in this order during the guided exercise.
-  order: ['A', 'B'],
-
-  packages: {
-    A: {
-      key: 'A',
-      id: 'PKG-A-1042',
-      label: 'Package A',
-      condition: 'damaged',
-      evidence: 'Crushed and torn top corner',
-    },
-    B: {
-      key: 'B',
-      id: 'PKG-B-2087',
-      label: 'Package B',
-      condition: 'intact',
-      barcode: 'DG2087-4415',
-      expectedWeightKg: 5.0,
-      toleranceKg: 0.2,
-      measuredWeightKg: 4.96,
-    },
-  },
-
-  // Ten checkpoints × 10 points (PRD §8).
-  checkpoints: [
-    { id: 'A_CONDITION', pkg: 'A', points: 10, label: "Identify Package A's damaged condition" },
-    { id: 'A_REJECT', pkg: 'A', points: 10, label: 'Reject Package A' },
-    { id: 'A_QUARANTINE', pkg: 'A', points: 10, label: 'Select quarantine for Package A' },
-    { id: 'B_CONDITION', pkg: 'B', points: 10, label: "Identify Package B's intact condition" },
-    { id: 'B_ACCEPT', pkg: 'B', points: 10, label: 'Accept Package B' },
-    { id: 'B_SCAN_FIRST', pkg: 'B', points: 10, label: 'Scan Package B before weighing' },
-    { id: 'B_WEIGH_AFTER_SCAN', pkg: 'B', points: 10, label: 'Weigh Package B after scan success' },
-    { id: 'B_WEIGHT_CONFIRM', pkg: 'B', points: 10, label: 'Confirm the weight is within the displayed range' },
-    { id: 'B_OUTBOUND', pkg: 'B', points: 10, label: 'Choose outbound after all prerequisites' },
-    { id: 'B_NO_PREMATURE', pkg: 'B', points: 10, label: 'No premature outbound release attempt' },
-  ],
+  order: ORDER,
+  packages: PACKAGES,
+  checkpoints: ORDER.flatMap((k) => packageCheckpoints(PACKAGES[k])),
 
   criticalErrors: {
     ACCEPTED_DAMAGED: 'Accepted a visibly damaged package',
@@ -56,10 +95,10 @@ export const SCENARIO = Object.freeze({
   proficiency: { minScore: 80, maxCriticalErrors: 0 },
 
   rules: [
-    'Inspect every package before deciding.',
+    'Inspect every package before deciding: turn it and check every side.',
     'Visible damage (crushed, torn, punctured): REJECT and place in QUARANTINE. Never send outbound.',
-    'No visible damage: ACCEPT, then SCAN the barcode, WEIGH on the scale, CONFIRM the weight is in range, then route OUTBOUND.',
-    'Package B expected weight: 5.0 kg ± 0.2 kg (scenario value, not a universal policy).',
+    'No visible damage: ACCEPT, then SCAN the label, WEIGH on the scale, CONFIRM the weight is in range, then route OUTBOUND.',
+    'The receiving monitor shows each package’s contents and expected weight once it is scanned (scenario values, not a universal policy).',
     'Release outbound only after scan and weight confirmation.',
   ],
 
@@ -95,4 +134,4 @@ export function weightWithinRange(pkg = SCENARIO.packages.B) {
   return pkg.measuredWeightKg >= min && pkg.measuredWeightKg <= max;
 }
 
-export const MAX_SCORE = SCENARIO.checkpoints.reduce((s, c) => s + c.points, 0);
+export const MAX_SCORE = 100;

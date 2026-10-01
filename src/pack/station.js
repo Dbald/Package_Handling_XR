@@ -1,10 +1,10 @@
 // Station 1 interaction controller: grabbing, drop targets, handheld scanner,
 // tape gun, label printer, displays and local prompts. Every procedural
 // change goes through PackEngine; visuals follow validated results only.
-// Supports several orders (packScenario(i)) for Station 1 replays.
+// A shift is several totes (packRun(v)); replays move to the next run.
 import * as THREE from 'three';
 import { buildPackStation, PACK_LAYOUT as L } from './scene.js';
-import { PACK_CATALOG, packScenario, packWeightRange } from './scenario.js';
+import { PACK_CATALOG, packRun, packWeightRange } from './scenario.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const v1 = new THREE.Vector3();
@@ -30,23 +30,39 @@ export class PackStation {
     this.scanFlash = null;
     this.tape = { a: 0, b: 0, active: null, lastBuzz: 0 };
     this.flapK = 0;
+    this.shipping = null;
     this.reset();
+    // Next tote of the shift: swap the order and roll the new tote in.
+    this.engine.on((evt) => { if (evt.type === 'order') this.onNextOrder(); });
   }
 
   get engine() {
     return this.app.session.pack;
   }
 
-  /** Switch to order `index` (engine + visuals). */
-  setOrder(index) {
-    const sc = packScenario(index);
+  /** Switch to run `variant` (Station 1 replay with new orders). */
+  setRun(variant) {
+    const run = packRun(variant);
     // Update local state first: the engine reset triggers a UI refresh.
-    this.s = sc;
-    this.selected = sc.itemOrder[0];
-    this.engine.setScenario(sc);
-    this.w.drawToteLabel(sc.order.tote);
-    this.w.shipLabel.draw(sc);
+    this.s = run.orders[0];
+    this.selected = this.s.itemOrder[0];
+    this.finishShipping();
+    this.engine.setRun(run);
+    this.drawOrder();
     this.reset();
+  }
+
+  drawOrder() {
+    this.w.drawToteLabel(this.s.order.tote);
+    this.w.shipLabel.draw(this.s);
+    this.w.nextTote.visible = this.s.index < this.s.count - 1;
+  }
+
+  onNextOrder() {
+    this.s = this.engine.scenario;
+    this.selected = this.s.itemOrder[0];
+    this.drawOrder();
+    this.reset({ rollIn: true, keepHeldTools: true });
   }
 
   // ------------------------------------------------------------ registry
@@ -117,24 +133,36 @@ export class PackStation {
 
   // --------------------------------------------------------------- state
 
-  reset() {
+  /**
+   * Put everything for the current tote in place. `rollIn` slides the new
+   * tote in along the inbound rollers; `keepHeldTools` leaves a scanner or
+   * tape gun in the learner's hand between totes.
+   */
+  reset({ rollIn = false, keepHeldTools = false } = {}) {
+    const keep = new Set();
     for (const c of this.app.xrInput?.controllers ?? []) {
-      if (c.held && c.held.startsWith('pk:')) c.held = null;
+      if (!c.held || !c.held.startsWith('pk:')) continue;
+      if (keepHeldTools && TOOL_KEYS.includes(c.held)) keep.add(c.held);
+      else c.held = null;
     }
+    if (!keep.has('pk:tape')) this.tape = { a: 0, b: 0, active: null, lastBuzz: 0 };
+    else this.tape = { ...this.tape, a: 0, b: 0, active: null };
     for (const key of ALL_ITEM_KEYS) {
       const obj = this.w.items[key.slice(3)].group;
       this.app.cancelTweens?.(obj);
       this.group.attach(obj);
       obj.visible = false;
     }
-    for (const c of Object.values(this.w.cartons)) {
+    for (const [k, c] of Object.entries(this.w.cartons)) {
+      if (this.shipping?.key === k) continue; // still riding the outbound conveyor
       this.app.cancelTweens?.(c.group);
       this.group.attach(c.group);
       c.group.visible = false;
       c.setFlaps(0);
       c.setTape(0, 0);
     }
-    const keys = [...this.itemKeys, ...TOOL_KEYS, 'pk:pillow', 'pk:label', 'pk:box', ...this.s.cartonOrder.map((k) => `pk:carton-${k}`)];
+    const keys = [...this.itemKeys, ...TOOL_KEYS, 'pk:pillow', 'pk:label', 'pk:box', ...this.s.cartonOrder.map((k) => `pk:carton-${k}`)]
+      .filter((k) => !keep.has(k) && !(k === 'pk:box' && this.shipping && this.carton === this.w.cartons[this.shipping.key]));
     for (const key of keys) {
       const obj = this.objFor(key);
       this.app.cancelTweens?.(obj);
@@ -147,8 +175,30 @@ export class PackStation {
     }
     this.selected = this.s.itemOrder[0];
     this.scanFlash = null;
-    this.tape = { a: 0, b: 0, active: null, lastBuzz: 0 };
     this.flapK = 0;
+    if (rollIn && !this.app.settings.reducedMotion) {
+      for (const obj of [this.w.tote, ...this.itemKeys.map((k) => this.objFor(k))]) {
+        const end = obj.position.clone();
+        obj.position.x -= 0.9;
+        this.app.tween(obj, { pos: end, dur: 1.3, ease: 'out' });
+      }
+      this.app.sfx.play('conveyor');
+    }
+    this.sync();
+  }
+
+  /** The shipped carton has left: hide it and make it reusable. */
+  finishShipping() {
+    const sh = this.shipping;
+    if (!sh) return;
+    this.shipping = null;
+    const c = this.w.cartons[sh.key];
+    this.app.cancelTweens?.(c.group);
+    c.group.visible = false;
+    c.setFlaps(0);
+    c.setTape(0, 0);
+    c.appliedLabel.visible = false;
+    c.pillows.forEach((p) => { p.visible = false; });
     this.sync();
   }
 
@@ -156,7 +206,9 @@ export class PackStation {
   sync() {
     const e = this.engine;
     const w = this.w;
+    if (this.shipping && e.carton === this.shipping.key) this.finishShipping(); // same size needed again
     for (const [k, c] of Object.entries(w.cartons)) {
+      if (this.shipping?.key === k) continue;
       const built = e.carton === k;
       c.group.visible = built;
       c.pillows.forEach((p, i) => { p.visible = built && i < e.dunnage; });
@@ -191,7 +243,7 @@ export class PackStation {
     if (this.w.label.visible && !this.isHeld('pk:label')) add(this.w.label);
     const box = this.carton.group;
     if (box.visible && !this.isHeld('pk:box')) box.children.forEach((o) => { if (o.isMesh) list.push(o); });
-    list.push(this.w.printer, this.w.wms.mesh, this.w.releaseBtn);
+    list.push(this.w.printer, this.w.wms.mesh, this.w.releaseBtn, ...this.w.heightSwitch.buttons);
     return list;
   }
 
@@ -586,11 +638,30 @@ export class PackStation {
   }
 
   confirmRelease(ctx) {
+    const size = this.engine.carton;
+    // Mark the carton as shipping first: a successful release moves the
+    // engine to the next tote, and that reset must leave this carton alone.
+    if (size) this.finishShipping();
+    if (size && this.engine.staged) this.shipping = { key: size };
     const r = this.engine.release(ctx);
     if (r.ok && r.code === 'RELEASED') {
       const C = L.conveyor;
-      this.loc['pk:box'] = 'released';
-      this.app.tween(this.carton.group, { pos: new THREE.Vector3(C.x, C.top, C.endZ), quat: new THREE.Quaternion(), dur: 3.2, ease: 'linear' });
+      const shipped = this.w.cartons[size];
+      const g = shipped.group;
+      // Ships closed and taped, even if the flap animation had not finished.
+      shipped.setFlaps(1);
+      shipped.setTape(-shipped.size[0] / 2 - 0.002, shipped.size[0] / 2 + 0.002);
+      // The last carton of the shift stays at the end of the line.
+      if (r.lastOrder) {
+        this.loc['pk:box'] = 'released';
+        this.shipping = null;
+      }
+      this.app.tween(g, {
+        pos: new THREE.Vector3(C.x, C.top, C.endZ), quat: new THREE.Quaternion(), dur: 3.2, ease: 'linear',
+        onDone: () => { if (this.shipping?.key === size) this.finishShipping(); },
+      });
+    } else {
+      this.shipping = null;
     }
     return r;
   }
@@ -655,9 +726,10 @@ export class PackStation {
     w.printerScreen.show([{ text: e.labelApplied ? 'DONE' : e.labelPrinted ? 'TAKE LABEL' : 'READY', size: 64, bold: true }]);
     const s = this.s;
     w.wms.show({
+      tote: s.order.tote,
+      toteNo: `TOTE ${s.index + 1} OF ${s.count}`,
       open: e.orderOpen,
       orderId: s.order.id,
-      tote: s.order.tote,
       service: s.order.service,
       rows: e.orderItems().map((k) => ({
         name: s.items[k].name, sku: s.items[k].sku, dims: s.items[k].dims, fragile: s.items[k].fragile,

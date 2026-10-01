@@ -5,7 +5,7 @@ import { Session } from '../src/session.js';
 import { PackEngine } from '../src/pack/engine.js';
 import { ProcedureEngine } from '../src/engine.js';
 
-const ctx = { input: 'test' };
+import { ctx, packRest, dockAll } from './helpers.js';
 
 function make() {
   let n = 0;
@@ -14,27 +14,7 @@ function make() {
   return new Session({ pack: new PackEngine({ now, idGen }), dock: new ProcedureEngine({ now, idGen }) });
 }
 
-function packAll(e) {
-  e.scanTote(ctx);
-  ['mug', 'book', 'case'].forEach((k) => e.scanItem(k, {}, ctx));
-  e.divertItem('case', ctx);
-  e.selectCarton('M', ctx);
-  e.packItem('mug', ctx);
-  e.packItem('book', ctx);
-  e.addDunnage(ctx);
-  e.seal(ctx);
-  e.confirmWeight('within', ctx);
-  e.printLabel(ctx);
-  e.applyLabel(ctx);
-  e.stage(ctx);
-  e.release(ctx);
-}
-
-function dockAll(e) {
-  e.inspect('A', ctx); e.submitCondition('A', 'damaged', ctx); e.decide('A', 'reject', ctx); e.place('A', 'quarantine', ctx);
-  e.inspect('B', ctx); e.submitCondition('B', 'intact', ctx); e.decide('B', 'accept', ctx); e.scan('B', { aligned: true }, ctx);
-  e.place('B', 'scale', ctx); e.confirmWeight('B', 'within', ctx); e.place('B', 'outbound', ctx); e.release('B', ctx);
-}
+const packAll = packRest;
 
 test('full two-station run: 200/200 and proficient', () => {
   const s = make();

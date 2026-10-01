@@ -65,8 +65,55 @@ try {
   const sessionResults = () => page.evaluate(() => globalThis.__app.session.results());
   const state = (k) => page.evaluate((key) => globalThis.__app.engine.packageState(key), k);
   const settle = () => page.waitForFunction(() => !globalThis.__app.transition, null, { timeout: 5000 });
+  const pick = (k) => page.evaluate((key) => globalThis.__app.dispatch(`pk:pick:${key}`, 'desktop'), k);
+  // One whole tote through the accessible buttons, read from the scenario.
+  const packToteUI = async () => {
+    const sc = await page.evaluate(() => {
+      const o = globalThis.__app.session.pack.scenario;
+      return { items: o.itemOrder.map((k) => ({ k, on: o.items[k].onOrder, fragile: o.items[k].fragile })), carton: o.correctCarton };
+    });
+    await act('pk:scan:tote');
+    for (const it of sc.items) { await pick(it.k); await act('pk:scan:item'); }
+    for (const it of sc.items.filter((i) => !i.on)) { await pick(it.k); await act('pk:divert'); }
+    await act(`pk:carton:${sc.carton}`);
+    for (const it of sc.items.filter((i) => i.on)) { await pick(it.k); await act('pk:pack'); }
+    if (sc.items.some((i) => i.on && i.fragile)) { await act('pk:dunnage'); await act('pk:dunnage'); }
+    for (const id of ['pk:seal', 'pk:weight:within', 'pk:print', 'pk:apply', 'pk:outbound', 'release']) await act(id);
+  };
+  // One Station 2 package, done right, through the buttons.
+  const dockPackageUI = async (k) => {
+    const damaged = await page.evaluate((key) => globalThis.__app.engine.scenario.packages[key].condition === 'damaged', k);
+    await act('assist:bring');
+    await act(damaged ? 'condition:damaged' : 'condition:intact');
+    if (damaged) {
+      await act('decide:reject');
+      await act('place:quarantine');
+    } else {
+      for (const id of ['decide:accept', 'scan', 'place:scale', 'weight:within', 'place:outbound', 'release']) await act(id);
+    }
+    assert.equal(await state(k), damaged ? 'quarantined' : 'outbound');
+  };
 
   await shot('02-setup');
+  // Bench height: labelled section with a cm readout, plus the physical switch under the bench edge.
+  assert.match(await page.textContent('#actions'), /Bench height\s*92 cm/i);
+  const viaSwitch = await page.evaluate(() => {
+    const app = globalThis.__app;
+    const btn = app.pack.w.heightSwitch.buttons[1];
+    const V = btn.position.constructor;
+    const target = btn.getWorldPosition(new V());
+    const origin = target.clone().add(new V(0, 0.4, 0.3));
+    const rc = app.desktop.raycaster;
+    rc.set(origin, target.clone().sub(origin).normalize());
+    const hit = app.pick(rc);
+    const before = app.settings.benchHeight;
+    if (hit?.kind === 'button') app.dispatch(hit.action, 'xr');
+    return { kind: hit?.kind, action: hit?.action, delta: +(app.settings.benchHeight - before).toFixed(3) };
+  });
+  assert.deepEqual(viaSwitch, { kind: 'button', action: 'height:up', delta: 0.03 });
+  assert.match(await page.textContent('#actions'), /95 cm/);
+  await act('height:down');
+  assert.match(await page.textContent('#actions'), /92 cm/);
   await act('posture:seated');
   await act('posture:standing');
   await act('continue');
@@ -96,33 +143,24 @@ try {
   await act('pk:apply');
   await act('pk:outbound');
   await act('release');
-  const pr = await page.evaluate(() => globalThis.__app.session.pack.results());
-  assert.equal(pr.score, 100, 'perfect pack-out scores 100');
-  assert.equal(pr.status, 'proficient');
-  await shot('03d-pack-done');
-
-  // Replay Station 1 with the next order: different items, carton S, no fragile item.
-  await act('station:replay-pack');
+  // Tote 1 shipped: tote 2 rolls in and the station carries on.
   assert.equal(await page.evaluate(() => globalThis.__app.session.pack.scenario.order.id), 'ORD-58257');
-  assert.deepEqual(await page.evaluate(() => globalThis.__app.session.pack.scenario.itemOrder), ['charger', 'cable', 'book']);
-  await act('pk:scan:tote');
-  await act('pk:scan:item'); // charger
-  await act('pk:select');
-  await act('pk:scan:item'); // cable
-  await act('pk:select');
-  await act('pk:scan:item'); // book: not on this order
-  await act('pk:divert');
-  await act('pk:carton:S');
-  await act('pk:pack');
-  await act('pk:pack');
-  await act('pk:seal'); // nothing fragile: no void fill required
-  await act('pk:weight:within');
-  await act('pk:print');
-  await act('pk:apply');
-  await act('pk:outbound');
-  await act('release');
+  assert.match(await page.textContent('#side'), /Tote 2 of 4/);
+  await page.waitForTimeout(1500);
+  await shot('03d-pack-tote2');
+  for (let i = 0; i < 3; i++) await packToteUI();
+  const pr = await page.evaluate(() => globalThis.__app.session.pack.results());
+  assert.equal(pr.score, 100, 'perfect four-tote shift scores 100');
+  assert.equal(pr.status, 'proficient');
+  await shot('03e-pack-done');
+
+  // Replay Station 1: a new shift of four different totes.
+  await act('station:replay-pack');
+  assert.equal(await page.evaluate(() => globalThis.__app.session.pack.scenario.order.id), 'ORD-61102');
+  assert.deepEqual(await page.evaluate(() => globalThis.__app.session.pack.scenario.itemOrder), ['mug', 'charger', 'cable']);
+  for (let i = 0; i < 4; i++) await packToteUI();
   const pr2 = await page.evaluate(() => globalThis.__app.session.pack.results());
-  assert.equal(pr2.score, 100, 'second order also perfect');
+  assert.equal(pr2.score, 100, 'replay shift also perfect');
   await act('station:dock');
   await settle();
   await act('start');
@@ -133,6 +171,8 @@ try {
   await act('decide:reject');
   await act('place:quarantine');
   assert.equal(await state('A'), 'quarantined');
+  // Package B rolls in from the inbound conveyor.
+  await page.waitForFunction(() => globalThis.__app.phys.B.zone === 'bench', null, { timeout: 5000 });
   await act('assist:bring');
   await act('condition:intact');
   await act('decide:accept');
@@ -145,6 +185,8 @@ try {
   await act('weight:within');
   await act('place:outbound');
   await act('release');
+  await dockPackageUI('C');
+  await dockPackageUI('D');
   await page.waitForTimeout(400);
   let r = await results();
   assert.equal(r.score, 100, 'perfect dock run scores 100');
@@ -195,11 +237,13 @@ try {
   await act('weight:within');
   await act('place:outbound');
   await act('release');
+  await dockPackageUI('C');
+  await dockPackageUI('D');
   r = await results();
   assert.equal(r.complete, true);
   assert.equal(r.status, 'practice');
   assert.equal(r.criticalErrors.length, 2);
-  assert.equal(r.score, 70);
+  assert.equal(r.score, 85, 'three of twenty checkpoints missed');
   const sr2 = await sessionResults();
   assert.equal(sr2.status, 'incomplete', 'skipping Station 1 never passes');
   assert.match(await page.textContent('#side'), /Station 1 skipped/);
@@ -290,12 +334,17 @@ async function vrLogic(browser, errors) {
   await ev(() => globalThis.__let());
   assert.equal(await st('A'), 'quarantined');
   assert.equal(await zone('A'), 'quarantine');
+  // It drops to the floor of the sunken bin, below the bench top.
+  const ay = await ev(() => globalThis.__app.world.packages.A.group.position.y);
+  assert.ok(ay < 0, `A sits below the bench top in the bin, got ${ay}`);
   // Quarantined package stays put and cannot be picked back up.
-  await grip(L.tote.x, 0.14, L.tote.z);
+  await grip(L.tote.x, ay, L.tote.z);
   assert.equal(await ev(() => globalThis.__squeeze()), null);
 
-  // Package B.
-  await grip(L.incoming.x, 0.13, L.incoming.z);
+  // Package B rolls in from the inbound conveyor to the arrival pad.
+  await page.waitForFunction(() => globalThis.__app.phys.B.zone === 'bench', null, { timeout: 5000 });
+  assert.equal(await zone('C'), 'queue');
+  await grip(L.mat.x, 0.13, L.mat.z);
   assert.equal(await ev(() => globalThis.__squeeze()), 'B');
   await act('condition:intact');
   await act('decide:accept');
@@ -379,9 +428,21 @@ async function vrLogic(browser, errors) {
   await grip(L.conveyor.x, 0.25, L.conveyor.intakeZ);
   await ev(() => globalThis.__let());
   await act('release');
+  assert.equal(await st('B'), 'outbound');
+  // C and D follow; the receiving monitor shows C's contents once scanned.
+  await page.waitForFunction(() => globalThis.__app.phys.C.zone === 'bench', null, { timeout: 5000 });
+  for (const id of ['assist:bring', 'condition:intact', 'decide:accept', 'scan']) await act(id);
+  await page.waitForTimeout(150);
+  assert.match(await ev(() => globalThis.__app.world.receiving.key), /Desk lamp/);
+  for (const id of ['place:scale', 'weight:within', 'place:outbound', 'release']) await act(id);
+  await page.waitForFunction(() => globalThis.__app.phys.D.zone === 'bench', null, { timeout: 5000 });
+  for (const id of ['assist:bring', 'condition:damaged', 'decide:reject', 'place:quarantine']) await act(id);
+  // D stacks on A in the bin.
+  const [ya, yd] = await ev(() => ['A', 'D'].map((k) => globalThis.__app.world.packages[k].group.position.y));
+  assert.ok(yd > ya + 0.15, `D stacked on A (${ya} → ${yd})`);
   const r = await ev(() => globalThis.__app.engine.results());
   assert.equal(r.complete, true);
-  assert.equal(r.score, 80);
+  assert.equal(r.score, 90, 'two of twenty checkpoints missed');
   assert.equal(r.status, 'practice', 'premature release stays on the record');
 
   // Replay, start Station 1, then exit VR midway: paused, never complete or passing.
@@ -567,9 +628,40 @@ async function vrPackLogic(browser, errors) {
   await let_();
   assert.equal(await pe((e) => e.staged), true);
   await act('release');
+  // Tote 2 rolls in: new order, its items in the tote, the shipped carton gone.
+  const t2 = await ev(() => {
+    const app = globalThis.__app;
+    const w = app.pack.w;
+    return {
+      order: app.session.pack.scenario.order.id,
+      visible: Object.keys(w.items).filter((k) => w.items[k].group.visible).sort(),
+      cartonM: w.cartons.M.group.visible,
+      flats: Object.values(w.flats).every((f) => f.group.visible),
+      tote: app.pack.loc['pk:charger'],
+      complete: app.session.pack.isComplete(),
+    };
+  });
+  assert.deepEqual(t2, { order: 'ORD-58257', visible: ['book', 'cable', 'charger'], cartonM: false, flats: true, tote: 'home', complete: false });
+  // Remaining totes through the assisted actions (same validated engine calls).
+  await ev(() => {
+    const app = globalThis.__app;
+    const d = (id) => app.dispatch(id, 'xr');
+    for (let i = 0; i < 3; i++) {
+      const o = app.session.pack.scenario;
+      d('pk:scan:tote');
+      for (const k of o.itemOrder) { d(`pk:pick:${k}`); d('pk:scan:item'); }
+      for (const k of o.itemOrder.filter((k2) => !o.items[k2].onOrder)) { d(`pk:pick:${k}`); d('pk:divert'); }
+      d(`pk:carton:${o.correctCarton}`);
+      for (const k of o.itemOrder.filter((k2) => o.items[k2].onOrder)) { d(`pk:pick:${k}`); d('pk:pack'); }
+      if (o.itemOrder.some((k) => o.items[k].onOrder && o.items[k].fragile)) d('pk:dunnage');
+      for (const id of ['pk:seal', 'pk:weight:within', 'pk:print', 'pk:apply', 'pk:outbound', 'release']) d(id);
+    }
+  });
   const r = await pe((e) => e.results());
   assert.equal(r.complete, true);
   assert.equal(r.score, 100, `pack VR run should be perfect: ${JSON.stringify(r.checkpoints.filter((c) => c.status !== 'passed'))}`);
+  // The last carton of the shift stays at the end of the outbound line.
+  assert.equal(await ev(() => globalThis.__app.pack.w.cartons.M.group.visible), true);
   await page.close();
 }
 

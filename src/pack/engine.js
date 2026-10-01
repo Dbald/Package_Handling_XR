@@ -2,16 +2,40 @@
 // invalid actions never change state, only first attempts score, repeated
 // identical errors never add penalties.
 import { BaseEngine } from '../engine-base.js';
-import { PACK_SCENARIO, packWeightRange } from './scenario.js';
+import { PACK_RUN, packWeightRange } from './scenario.js';
 
 const fmtKg = (v) => `${v.toFixed(2)} kg`;
 
+/**
+ * A shift of several totes (run.orders), packed one after another. Releasing
+ * a carton moves straight on to the next tote (`order` event); the station
+ * completes after the last one. `this.scenario` is always the current tote,
+ * and every tote shares the run's checkpoint list (ids prefixed T1_…).
+ */
 export class PackEngine extends BaseEngine {
-  constructor({ scenario = PACK_SCENARIO, ...opts } = {}) {
-    super({ scenario, ...opts });
+  constructor({ run = PACK_RUN, ...opts } = {}) {
+    super({ scenario: run.orders[0], ...opts });
+    this.run = run;
+  }
+
+  /** Switch to another run (Station 1 replay with new orders). */
+  setRun(run) {
+    this.run = run;
+    this.scenario = run.orders[0];
+    this.reset();
+  }
+
+  get orderCount() {
+    return this.run?.orders.length ?? 1;
   }
 
   _initState() {
+    this.orderIndex = 0;
+    if (this.run) this.scenario = this.run.orders[0];
+    this._initOrder();
+  }
+
+  _initOrder() {
     const s = this.scenario;
     this.orderOpen = false;
     this.items = {};
@@ -26,15 +50,28 @@ export class PackEngine extends BaseEngine {
     this.released = false;
   }
 
-  /** Switch to another order (Station 1 replay with a new configuration). */
-  setScenario(scenario) {
-    this.scenario = scenario;
-    this.maxScore = scenario.checkpoints.reduce((a, c) => a + c.points, 0);
-    this.reset();
+  _startMessage() {
+    return `Tote 1 of ${this.orderCount}. Pick up the scanner and scan the tote label to open the order.`;
   }
 
-  _startMessage() {
-    return 'Pick up the scanner and scan the tote label to open the order.';
+  /** Checkpoint ids are per tote: 'PK_SEAL' → 'T2_PK_SEAL'. Inapplicable ones are skipped. */
+  _evaluate(cpId, correct, note) {
+    const id = `${this.scenario.cpPrefix ?? ''}${cpId}`;
+    if (!this.checkpoints[id]) return null;
+    return super._evaluate(id, correct, note);
+  }
+
+  _logEntry(subjectId, action, opts) {
+    const id = opts.checkpointId ? `${this.scenario.cpPrefix ?? ''}${opts.checkpointId}` : null;
+    return super._logEntry(subjectId, action, { ...opts, checkpointId: id && this.checkpoints[id] ? id : null });
+  }
+
+  /** Move on to the next tote of the run. */
+  _nextOrder() {
+    this.orderIndex += 1;
+    this.scenario = this.run.orders[this.orderIndex];
+    this._initOrder();
+    this._emit({ type: 'order', index: this.orderIndex });
   }
 
   // ------------------------------------------------------------------ queries
@@ -192,7 +229,7 @@ export class PackEngine extends BaseEngine {
     }
     if (!def.onOrder) {
       const first = this._evaluate('PK_EXCEPTION', false, 'The item not on the order was put in the carton.');
-      const isNew = this._critical('WRONG_ITEM_PACKED', def.sku);
+      const isNew = this._critical('WRONG_ITEM_PACKED', `${this.scenario.order.id} ${def.sku}`);
       const r = this._result(false, 'WRONG_ITEM', 'critical',
         `Blocked. ${def.name} is NOT on order ${this.scenario.order.id}. Packing it ships the wrong product and costs a return. ` +
         'Put it in the EXCEPTION bin.', { critical: true, newCritical: isNew, returnHome: true });
@@ -383,8 +420,16 @@ export class PackEngine extends BaseEngine {
     this.released = true;
     this._evaluate('PK_LABEL', true);
     const first = this._evaluate('PK_RELEASE', true);
-    this._setPhase('complete');
-    const r = this._result(true, 'RELEASED', 'success', `Order ${oid} released to the dock. Station 1 complete.`);
-    return this._finish(oid, 'release', r, { checkpointId: 'PK_RELEASE', valid: true, first, ctx });
+    const last = this.orderIndex >= this.orderCount - 1;
+    const r = this._result(true, 'RELEASED', 'success', last
+      ? `Order ${oid} shipped. All ${this.orderCount} totes done: Station 1 complete.`
+      : `Order ${oid} shipped. Tote ${this.orderIndex + 2} of ${this.orderCount} is rolling in: scan its label to open the next order.`,
+    { orderIndex: this.orderIndex, lastOrder: last });
+    // Log against this tote before moving on.
+    this._logEntry(oid, 'release', { checkpointId: 'PK_RELEASE', valid: true, first, ctx });
+    if (last) this._setPhase('complete');
+    else this._nextOrder();
+    this._emit({ type: 'action', action: 'release', pkg: oid, result: r });
+    return r;
   }
 }

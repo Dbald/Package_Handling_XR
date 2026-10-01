@@ -29,10 +29,12 @@ WebXR needs **HTTPS**. `localhost` works for desktop, but the headset needs a re
 ## Using it on Quest 2
 
 1. Open **Meta Quest Browser**, enter the HTTPS URL and select **Enter VR**. The scene fades in from dark.
-2. **Comfort setup** (not scored): Seated or Standing, bench height, Recenter. Practise grabbing on the grey box.
+2. **Comfort setup** (not scored): Seated or Standing, then **Bench height** (its own labelled row with a live cm readout), then Recenter. The same **BENCH HEIGHT ▼ LOWER / ▲ RAISE** switch is mounted under the front edge of both benches, so the bench can be adjusted at any time. A prompt points at it during setup. Practise grabbing on the grey box.
 3. **Shift briefing**, then **Start Station 1**. For demos, **Skip to Station 2** jumps straight to the dock. A skipped station is reported as *Incomplete*, so it can never produce a pass.
-4. When Station 1 is done, **Continue to Station 2**, or **Replay Station 1 (new order)** to practise with a different order. There are three orders, each with different items, a different correct carton and a different mis-picked item. Continuing fades out and back in at the dock bench. There is no walking or artificial movement.
-5. The combined results show each station's score, critical errors and a checkpoint breakdown. **Replay** resets everything.
+4. **Station 1 is a shift of four totes.** Each tote needs a different carton, in the order M, S, L, M. The totes mix fragile items, mis-picks and one clean tote. After each carton ships, the next tote rolls in along the inbound rollers. The order monitor shows *TOTE n OF 4*.
+5. When all four totes are done, **Continue to Station 2**, or **Replay (new totes)** for a second shift of four different orders. Continuing fades out and back in at the dock bench. There is no walking or artificial movement.
+6. **Station 2 handles four packages** (damaged, intact, intact, damaged). They queue on the inbound conveyor on the left. One sits on the arrival pad at a time, and the next rolls in once the current one is quarantined or shipped. Package D's damage is on the back, so it only shows when the package is turned around. The **receiving monitor** (left) shows the queue. Once a package's label is scanned, it shows what is inside and the expected weight.
+7. The combined results show each station's score and critical errors, with one line per tote or package (*all correct*, or what was missed). **Replay** resets everything.
 
 | Input | Action |
 |---|---|
@@ -43,7 +45,17 @@ WebXR needs **HTTPS**. `localhost` works for desktop, but the headset needs a re
 | B / Y | Help and pause panel |
 | Panel buttons | Assisted equivalents of every step, for seated or limited-reach use and for desktop. Every option is always offered (all carton sizes, all destinations), so the buttons never give away the answer. |
 
-**Guidance design.** Instructions appear on a physical **work-instruction console**: a mounted display with a bezel, floor stand and status light. Each screen shows a station chip, a step counter and progress bar, an icon, and **one short headline with one line under it**. Controller hints ("TRIGGER · scan") sit in amber key chips. When the task changes, the light bar pulses with a chime. Feedback is a coloured card: a title such as *Wrong carton* plus one line, with the full explanation under **More** on desktop. Detailed tips live behind an **Assist** toggle. Prompts float over the relevant tool (*PICK UP SCANNER*, then *SCAN TOTE LABEL*). A hint chip above the controller says what the trigger does right now. At Station 2 it turns green and pulses, with a haptic tick, when the label is in the scan zone: **PULL TRIGGER TO SCAN**. The **order monitor** on the left lists the order. Until the carton is built, a large amber **USE CARTON M** card on it and a glowing frame make the carton size stand out.
+**Guidance design.**
+- Instructions appear on a physical **work-instruction console**. It stands behind the bench and is clear of the conveyors at both stations.
+- Each screen shows:
+  - a station chip with the tote or package count (*Tote 2 of 4*, *Package C · 3 of 4*);
+  - a step counter and progress bar;
+  - an icon, with **one short headline and one line under it**.
+- Controller hints ("TRIGGER · scan") sit in amber key chips. When the task changes, the light bar pulses with a chime.
+- Feedback is a coloured card: a title such as *Wrong carton* plus one line, with the full explanation under **More** on desktop. Detailed tips live behind an **Assist** toggle.
+- Prompts float over the relevant tool (*PICK UP SCANNER*, then *SCAN TOTE LABEL*). A hint chip above the controller says what the trigger does right now. At Station 2 it turns green and pulses, with a haptic tick, when the label is in the scan zone: **PULL TRIGGER TO SCAN**.
+- The **order monitor** (Station 1) and the **receiving monitor** (Station 2) stand in the same place, to the learner's left. Until the carton is built, a large amber **USE CARTON M** card on the order monitor and a glowing frame make the carton size stand out.
+- At Station 2, rejected packages go into a **quarantine drop bin** sunk into the middle of the bench. Rejects stack below the bench top, so they never block the console.
 
 **Videos, sounds and music.** Record them, drop the files into `media/` and list them in `media/manifest.json`. No code changes are needed.
 - The **intro** video plays on the console when the shift briefing opens.
@@ -58,7 +70,7 @@ WebXR needs **HTTPS**. `localhost` works for desktop, but the headset needs a re
 - Hovering a button moves a small overlay instead of redrawing the panel.
 - Panel and screen images are uploaded asynchronously (`createImageBitmap`).
 - Instrument screens refresh at 10 Hz.
-- All static scenery is batched, with plain colours baked into vertex colours, and stock cartons are instanced. The fully dressed hall peaks at about 92 draw calls in a full 360° turn.
+- All static scenery is batched, with plain colours baked into vertex colours, and stock cartons are instanced. The fully dressed hall peaks at about 96 draw calls in a full 360° turn. Each package uses a single texture atlas, so it costs one draw call instead of six.
 - Add `?perf` to the URL to show an fps and frame-time meter under the console.
 
 ## Architecture
@@ -91,7 +103,9 @@ Design rules (from the PRD, applied to both stations):
 
 ## Scoring
 
-Each station has 10 checkpoints worth 10 points (session total 200). Only the first attempt at each counts. Mistakes can be corrected so the learner can finish, but they stay on the record. A station counts as proficient at **≥ 80 and zero critical errors** (a demo setting pending instructional validation). The session passes only if both stations are completed and proficient.
+Each station is scored **0–100: the share of its checkpoints passed on the first attempt** (session total 200). Mistakes can be corrected so the learner can finish, but they stay on the record. A station counts as proficient at **≥ 80 and zero critical errors** (a demo setting pending instructional validation). The session passes only if both stations are completed and proficient.
+- **Station 1:** every tote has its own checkpoints (37 across the first shift, 38 across the replay shift). Only the checkpoints that apply are counted: a tote with no mis-pick has no exception check, and one with nothing fragile has no void-fill check. Repeating the same mistake on a later tote counts again.
+- **Station 2:** each damaged package has 3 checkpoints and each intact one has 7, giving 20 in total.
 
 | Station | Critical errors |
 |---|---|
@@ -114,11 +128,12 @@ Session data (anonymous ID, scenario version, item or package, checkpoint, actio
 
 | Verified in this repo | Needs Quest 2 hardware |
 |---|---|
-| 34 unit tests: both engines, session flow, skip rules, reset | Station 1 reach and comfort: carton slots, scanner and tape gun handling |
+| 40 unit tests: both engines (four totes, four packages), every order fits its tote and carton, session flow, skip rules, reset | Station 1 reach and comfort: carton slots, scanner and tape gun handling |
 | Desktop flow through both stations, results, replay, help-pause, 200 % zoom (Playwright) | Scanner-gun aim feel; legibility of the order monitor |
-| Simulated-controller runs of Station 1: aimed scanner reads (front- and top-facing barcodes), exception bin, carton build, void fill, tape gun (rejected when too far), printer trigger, label, conveyor | 72 Hz frame budget with both stations. Measured here: 91 draw calls / ~4.9k triangles after batching, about the same as the build that ran smoothly. |
+| Simulated-controller runs of Station 1: aimed scanner reads (front- and top-facing barcodes), exception bin, carton build, void fill, tape gun (rejected when too far), printer trigger, label, conveyor | 72 Hz frame budget with both stations. Measured here: 96 draw calls worst case after batching and per-package texture atlases (the build that ran smoothly was 92). |
 | Station 2 simulated-controller suite (grab, scan zone, tracking loss, disconnect/resume, missed drop, exit VR) | Fade transition between stations |
-| Video logic: intro autoplay, scoring pause, Continue/Skip, coaching clip once per session | Recorded videos and sound on the headset (autoplay with sound, caption legibility) |
+| Video logic: intro autoplay, scoring pause, Continue/Skip, coaching clip once per session |
+| Tote hand-off (next tote rolls in, shipped carton leaves), inbound package queue, stacking in the drop bin, bench-height switch hit by a ray | Reach to the arrival pad and the drop bin; whether the switch under the bench edge is found without help | Recorded videos and sound on the headset (autoplay with sound, caption legibility) |
 | Payload ≈ 1.0 MB (≈ 250 KB gzipped) against the 15 MB budget | |
 
 Desktop and emulation results support development. They cannot satisfy the headset release gate (PRD §12).

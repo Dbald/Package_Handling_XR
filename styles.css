@@ -70,6 +70,9 @@ h2 { margin: 18px 0 8px; font-size: 1.1rem; }
 .actions { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
 .row .btn { flex: 1 1 0; min-width: 120px; }
+.row.labeled { margin-top: 4px; }
+.row-label { flex: 1 0 100%; font-size: 0.85em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #e0a526; }
+.row-label b { color: #ffffff; text-transform: none; margin-left: 0.4em; }
 
 .btn {
   min-height: 44px; padding: 8px 12px; border-radius: 8px; border: 1px solid #3a4652;

@@ -7,7 +7,7 @@ import { Tag } from './panel.js';
 const tmp = new THREE.Vector3();
 const box = new THREE.Box3();
 const NEAR_GRAB = 0.06;
-const LOST_FRAMES = 20; // ≈0.28 s at 72 Hz before freezing a held item
+const LOST_SECONDS = 0.28; // brief dropouts are ignored before freezing a held item
 
 function controllerVisual(handedness) {
   const g = new THREE.Group();
@@ -50,7 +50,7 @@ export class XRInput {
       scene.add(ray, grip, cursor, hint.mesh);
       const c = {
         index: i, ray, grip, line, cursor, source: null, connected: false, handedness: null,
-        held: null, lostFrames: 0, prev: [], hover: null, near: null, visual: null, hint, hintKey: null,
+        held: null, lostFor: 0, prev: [], hover: null, near: null, visual: null, hint, hintKey: null,
       };
       ray.addEventListener('connected', (e) => this.onConnected(c, e.data));
       ray.addEventListener('disconnected', () => this.onDisconnected(c));
@@ -176,9 +176,10 @@ export class XRInput {
       // Tracking loss while holding: freeze the item in place, never drop it.
       if (c.held) {
         if (!c.grip.visible) {
-          if (++c.lostFrames > LOST_FRAMES) app.freezeHeld(c, 'tracking');
+          c.lostFor += dt; // time-based, so it behaves the same at 72, 90 or 120 Hz
+          if (c.lostFor > LOST_SECONDS) app.freezeHeld(c, 'tracking');
         } else {
-          c.lostFrames = 0;
+          c.lostFor = 0;
         }
       }
       // Ray hover.

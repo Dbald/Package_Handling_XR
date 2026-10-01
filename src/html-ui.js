@@ -120,10 +120,16 @@ export class HtmlUI {
     const actions = $(`${prefix}actions`);
     const focused = document.activeElement?.dataset?.id;
     actions.replaceChildren();
-    for (const row of spec.buttons ?? []) {
-      if (!row.length) continue;
-      const r = el('div', { class: 'row' });
-      for (const b of row) {
+    for (const raw of spec.buttons ?? []) {
+      const row = Array.isArray(raw) ? { items: raw } : raw;
+      if (!row?.items?.length) continue;
+      const r = el('div', { class: row.label ? 'row labeled' : 'row', role: row.label ? 'group' : undefined, 'aria-label': row.label });
+      if (row.label) {
+        const lab = el('span', { class: 'row-label' }, row.label);
+        if (row.note) lab.append(el('b', {}, ` ${row.note}`));
+        r.append(lab);
+      }
+      for (const b of row.items) {
         const btn = el('button', {
           type: 'button',
           class: `btn ${b.variant ?? ''}`,

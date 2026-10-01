@@ -48,8 +48,8 @@ No code changes are needed.
 | `pack:WEIGHT_WRONG` | Misread the scale | How to read the range | ★ |
 | `pack:PREMATURE_RELEASE` | Tried to ship an unfinished carton | Sealed + weighed + labelled before release | ★★ |
 | `dock:NO_READ` | Scan zone didn't read | Label in the green zone, facing the scanner, **pull the trigger** | ★★★ |
-| `dock:CONDITION_WRONG` | Misjudged damaged vs intact | What damage looks like (crush, tear, puncture) | ★★ |
-| `dock:ACCEPTED_DAMAGED` | Accepted the damaged package | Why damage is never accepted | ★★★ |
+| `dock:CONDITION_WRONG` | Misjudged damaged vs intact | What damage looks like (crush, tear, puncture), and turn it to check every side: Package D's damage is on the back | ★★ |
+| `dock:ACCEPTED_DAMAGED` | Accepted a damaged package (A or D) | Why damage is never accepted | ★★★ |
 | `dock:REJECTED_INTACT` | Rejected a good package | Good packages get accepted | ★ |
 | `dock:DAMAGED_OUTBOUND` | Sent damage outbound | Damage goes to quarantine | ★★ |
 | `dock:SCAN_FIRST` | Weighed before scanning | Scan first, then weigh | ★ |
@@ -92,7 +92,7 @@ The **Key** column is the name to use in `audio.sfx`. "Placeholder" means a buil
 | `print` | Label printing | Thermal printer feed buzz (about 0.6 s) | yes |
 | `label` | Label applied | Peel and press | no |
 | `bin` | Item into the exception bin or quarantine tote | Plastic tote thunk | no |
-| `conveyor` | Released carton travels away | Rollers rumbling (2–3 s) | no |
+| `conveyor` | Carton or package leaves on the outbound line; the next tote or package rolls in | Rollers rumbling (2–3 s) | no |
 | `warning` | Blocked ("not yet") | Neutral low blip | yes |
 | `click` | Button press | Soft tactile click | yes |
 | `complete` | Station complete | Short celebratory sting (about 1.5 s) | yes |
@@ -133,6 +133,8 @@ If a file is listed as `audio.sfx["vo:<step>"]`, it plays each time that step st
 | `vo:pack:release` | "Ship it." |
 
 **Station 2**
+
+Keys are per package. A and D are damaged, so they use inspect, decide and quarantine. B and C are intact, so they use inspect through release. The same recording can be listed under several keys: for example, list one "Accept or reject?" file under `vo:dock:A:decide`, `vo:dock:B:decide`, `vo:dock:C:decide` and `vo:dock:D:decide`. Station 1 lines play for every tote.
 
 | Key | Line |
 |---|---|

@@ -326,7 +326,7 @@ export function buildHall(root) {
   for (const [x, z, w, d] of [
     [-0.22, -0.64, 1.6, 1.2], [-3.42, -0.64, 1.6, 1.2], // benches
     [0.6, -1.7, 0.9, 3.3], [-2.6, -1.7, 0.9, 3.3], // outbound conveyors
-    [-4.7, -0.5, 1.9, 0.8], // incoming rollers
+    [-4.7, -0.5, 1.9, 0.8], [-1.45, -0.54, 1.5, 0.8], // inbound rollers (both stations)
   ]) {
     const s = new THREE.Mesh(new THREE.PlaneGeometry(w, d), shadowMat);
     s.rotation.x = -Math.PI / 2;

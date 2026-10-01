@@ -5,7 +5,7 @@
 // consumables on the right, outbound roller conveyor beyond them.
 import * as THREE from 'three';
 import { paintCardboard, drawBarcode, textTexture, canvasTexture } from '../textures.js';
-import { ScreenDisplay, LAYOUT } from '../scene.js';
+import { ScreenDisplay, LAYOUT, buildHeightSwitch } from '../scene.js';
 import { uploadCanvas } from '../panel.js';
 import { PACK_CATALOG } from './scenario.js';
 
@@ -20,10 +20,12 @@ export const PACK_LAYOUT = Object.freeze({
   tape: { x: 0.28, z: -0.45 },
   scanner: { x: -0.335, z: -0.31 },
   // Order monitor on its own floor pole to the learner's left, beside the tote.
-  monitor: { x: -0.98, y: 0.5, z: -0.78, w: 0.56, h: 0.35 },
+  monitor: LAYOUT.monitor,
   conveyor: LAYOUT.conveyor,
   releaseButton: LAYOUT.releaseButton,
-  panel: { x: -0.2, z: -1.35, standingY: 0.8, seatedY: 0.72 },
+  heightSwitch: LAYOUT.heightSwitch,
+  // Console behind the bench, clear of the outbound conveyor on the right.
+  panel: LAYOUT.panel,
 });
 
 const lambert = (color, extra = {}) => new THREE.MeshLambertMaterial({ color, ...extra });
@@ -550,6 +552,7 @@ export function buildPackStation(scenario) {
   }
   // A waiting tote upstream, for context.
   const nextTote = box(T.w, T.h, T.d, toteMat, -1.4, T.h / 2 - 0.008, inZ);
+  nextTote.userData.noMerge = true; // hidden on the last tote of the shift
   station.add(nextTote);
 
   // Release control.
@@ -563,6 +566,11 @@ export function buildPackStation(scenario) {
   relLabel.position.set(R.x, 0.02, R.z + 0.061);
   station.add(relLabel);
   station.add(box(0.04, 1.4, 0.04, steel, R.x, -0.76, R.z));
+
+  // Bench-height switch under the front edge (same place as at Station 2).
+  const heightSwitch = buildHeightSwitch();
+  heightSwitch.group.position.set(L.heightSwitch.x, -0.1, L.heightSwitch.z);
+  station.add(heightSwitch.group);
 
   // Drop-target volumes (station frame), tested against an object's centre.
   const zone = (x, z, w, d, y0, y1) => ({
@@ -578,7 +586,7 @@ export function buildPackStation(scenario) {
 
   return {
     station, tote, toteLabel, drawToteLabel, items, flats, cartons, shipLabel, pillow, label,
-    tapeGun, scanner, printer, printerScreen, scaleScreen, wms, releaseBtn, zones, monitor, monitorGlow,
+    tapeGun, scanner, printer, printerScreen, scaleScreen, wms, releaseBtn, zones, monitor, monitorGlow, heightSwitch, nextTote,
   };
 }
 
@@ -660,9 +668,9 @@ export class WmsScreen {
     ctx.fillStyle = '#fff';
     ctx.font = `bold 36px ${F}`;
     ctx.fillText(view.open ? `ORDER ${view.orderId}` : 'PACK STATION 1', 24, 33);
-    ctx.font = `26px ${F}`;
+    ctx.font = `bold 28px ${F}`;
     ctx.textAlign = 'right';
-    ctx.fillText(view.open ? view.service : 'READY', W - 24, 33);
+    ctx.fillText(view.toteNo ?? (view.open ? view.service : 'READY'), W - 24, 33);
     ctx.textAlign = 'left';
     if (!view.open) {
       ctx.fillStyle = '#ffd97a';

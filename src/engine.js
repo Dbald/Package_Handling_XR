@@ -19,8 +19,8 @@ import { BaseEngine } from './engine-base.js';
 export const PHASES = ['setup', 'briefing', 'exercise', 'complete'];
 
 const STATE_ORDER = {
-  A: ['waiting', 'inspecting', 'condition_submitted', 'rejected', 'quarantined'],
-  B: ['waiting', 'inspecting', 'condition_submitted', 'accepted', 'scanned', 'weighed', 'weight_confirmed', 'staged', 'outbound'],
+  damaged: ['waiting', 'inspecting', 'condition_submitted', 'rejected', 'quarantined'],
+  intact: ['waiting', 'inspecting', 'condition_submitted', 'accepted', 'scanned', 'weighed', 'weight_confirmed', 'staged', 'outbound'],
 };
 
 const FINAL_STATE = { damaged: 'quarantined', intact: 'outbound' };
@@ -40,7 +40,7 @@ export class ProcedureEngine extends BaseEngine {
   }
 
   _startMessage() {
-    return `Pick up ${this._pkg('A').label} and inspect every side.`;
+    return `Pick up ${this._pkg(this.scenario.order[0]).label} from the inbound conveyor and inspect every side.`;
   }
 
   // ------------------------------------------------------------------ queries
@@ -64,7 +64,7 @@ export class ProcedureEngine extends BaseEngine {
   }
 
   stateAtLeast(key, state) {
-    const order = STATE_ORDER[key] ?? STATE_ORDER[this._pkg(key).condition === 'damaged' ? 'A' : 'B'];
+    const order = STATE_ORDER[this._pkg(key).condition];
     return order.indexOf(this.packages[key].state) >= order.indexOf(state);
   }
 
@@ -115,15 +115,15 @@ export class ProcedureEngine extends BaseEngine {
   }
 
   _premature(key, action, ctx) {
-    this._evaluate('B_OUTBOUND', false, 'Outbound was attempted before all prerequisites were met.');
-    this._evaluate('B_NO_PREMATURE', false, 'A premature outbound release was attempted.');
+    this._evaluate(`${key}_OUTBOUND`, false, 'Outbound was attempted before all prerequisites were met.');
+    this._evaluate(`${key}_NO_PREMATURE`, false, 'A premature outbound release was attempted.');
     const isNew = this._critical('PREMATURE_RELEASE', key);
     const missing = this._missingForRelease(key).join(', ');
     const r = this._result(false, 'PREMATURE_RELEASE', 'critical',
       `Blocked. ${this._pkg(key).label} cannot go outbound yet. Missing: ${missing}. ` +
       'Releasing an unverified package risks shipping the wrong item or weight.',
       { critical: true, newCritical: isNew, returnToBench: true });
-    return this._finish(key, action, r, { checkpointId: 'B_OUTBOUND', valid: false, first: null, critical: true, ctx });
+    return this._finish(key, action, r, { checkpointId: `${key}_OUTBOUND`, valid: false, first: null, critical: true, ctx });
   }
 
   // ------------------------------------------------------------------ actions
@@ -158,7 +158,7 @@ export class ProcedureEngine extends BaseEngine {
     }
     const correct = condition === def.condition;
     const note = def.condition === 'damaged'
-      ? `${def.label} has a crushed, torn corner — visible damage.`
+      ? `${def.label}: ${def.evidence.toLowerCase()} — visible damage.`
       : `${def.label} has no crushes, tears or punctures — it is intact.`;
     const first = this._evaluate(cpId, correct, note);
     let r;
@@ -277,32 +277,32 @@ export class ProcedureEngine extends BaseEngine {
         }
         let first = null;
         if (this.stateAtLeast(key, 'weight_confirmed')) {
-          first = this._evaluate('B_OUTBOUND', false, 'Accepted, verified packages are routed outbound, not quarantined.');
+          first = this._evaluate(`${key}_OUTBOUND`, false, 'Accepted, verified packages are routed outbound, not quarantined.');
         }
         const r = this._result(false, 'WRONG_DESTINATION', 'error',
           `${def.label} is accepted and intact. Quarantine is only for rejected packages. It has been returned to the bench.`,
           { returnToBench: true });
-        return this._finish(key, action, r, { checkpointId: first ? 'B_OUTBOUND' : null, valid: false, first, ctx });
+        return this._finish(key, action, r, { checkpointId: first ? `${key}_OUTBOUND` : null, valid: false, first, ctx });
       }
       if (zone === 'scale') {
         if (!this.stateAtLeast(key, 'accepted')) {
           return blocked('PREREQ', 'warning', `Accept ${def.label} before weighing it.`);
         }
         if (p.state === 'accepted') {
-          const f1 = this._evaluate('B_SCAN_FIRST', false, 'The package was placed on the scale before a successful scan.');
-          this._evaluate('B_WEIGH_AFTER_SCAN', false, 'Weighing was attempted before the scan succeeded.');
+          const f1 = this._evaluate(`${key}_SCAN_FIRST`, false, 'The package was placed on the scale before a successful scan.');
+          this._evaluate(`${key}_WEIGH_AFTER_SCAN`, false, 'Weighing was attempted before the scan succeeded.');
           const r = this._result(false, 'SCAN_FIRST', 'error',
             `Scan first. The scan links ${def.label} to its record — weigh only after a successful scan. It has been returned to the bench.`,
             { returnToBench: true });
-          return this._finish(key, action, r, { checkpointId: 'B_SCAN_FIRST', valid: false, first: f1, ctx });
+          return this._finish(key, action, r, { checkpointId: `${key}_SCAN_FIRST`, valid: false, first: f1, ctx });
         }
         if (p.state === 'scanned') {
-          const first = this._evaluate('B_WEIGH_AFTER_SCAN', true);
+          const first = this._evaluate(`${key}_WEIGH_AFTER_SCAN`, true);
           p.state = 'weighed';
           const { min, max } = weightRange(def);
           const r = this._result(true, 'WEIGHED', 'success',
             `Scale reads ${fmtKg(def.measuredWeightKg)}. Expected ${fmtKg(min)} – ${fmtKg(max)}. Is the reading within range?`);
-          return this._finish(key, action, r, { checkpointId: 'B_WEIGH_AFTER_SCAN', valid: true, first, ctx });
+          return this._finish(key, action, r, { checkpointId: `${key}_WEIGH_AFTER_SCAN`, valid: true, first, ctx });
         }
         return this._finish(key, action, this._result(true, 'ALREADY', 'info',
           `${def.label} was already weighed: ${fmtKg(def.measuredWeightKg)}.`, { returnToBench: false }));
@@ -333,11 +333,11 @@ export class ProcedureEngine extends BaseEngine {
       return this._finish(key, 'scan', this._result(true, 'ALREADY', 'info',
         `Already scanned: ${def.id}. Repeat scans do not change the score.`, { scannedId: def.id }));
     }
-    const first = this._evaluate('B_SCAN_FIRST', true);
+    const first = this._evaluate(`${key}_SCAN_FIRST`, true);
     p.state = 'scanned';
     const r = this._result(true, 'SCANNED', 'success',
       `Scan OK — ${def.id} (${def.barcode}). Now place ${def.label} on the scale.`, { scannedId: def.id });
-    return this._finish(key, 'scan', r, { checkpointId: 'B_SCAN_FIRST', valid: true, first, ctx });
+    return this._finish(key, 'scan', r, { checkpointId: `${key}_SCAN_FIRST`, valid: true, first, ctx });
   }
 
   confirmWeight(key, answer, ctx) {
@@ -359,7 +359,7 @@ export class ProcedureEngine extends BaseEngine {
     const correct = (answer === 'within') === within;
     const { min, max } = weightRange(def);
     const note = `${fmtKg(def.measuredWeightKg)} is ${within ? 'inside' : 'outside'} ${fmtKg(min)} – ${fmtKg(max)}.`;
-    const first = this._evaluate('B_WEIGHT_CONFIRM', correct, note);
+    const first = this._evaluate(`${key}_WEIGHT_CONFIRM`, correct, note);
     let r;
     if (correct) {
       p.state = 'weight_confirmed';
@@ -368,7 +368,7 @@ export class ProcedureEngine extends BaseEngine {
     } else {
       r = this._result(false, 'WEIGHT_WRONG', 'error', `Check the scale display again: ${note}`);
     }
-    return this._finish(key, 'weight', r, { checkpointId: 'B_WEIGHT_CONFIRM', valid: correct, first, ctx });
+    return this._finish(key, 'weight', r, { checkpointId: `${key}_WEIGHT_CONFIRM`, valid: correct, first, ctx });
   }
 
   /** Explicit outbound release confirmation. */
@@ -386,18 +386,18 @@ export class ProcedureEngine extends BaseEngine {
         `Place ${def.label} on the OUTBOUND conveyor before confirming release.`));
     }
     if (p.state !== 'staged') return this._premature(key, 'release', ctx);
-    const first = this._evaluate('B_OUTBOUND', true);
-    this._evaluate('B_NO_PREMATURE', true);
+    const first = this._evaluate(`${key}_OUTBOUND`, true);
+    this._evaluate(`${key}_NO_PREMATURE`, true);
     p.state = 'outbound';
     this._checkCompletion();
     const r = this._result(true, 'RELEASED', 'success',
-      `${def.label} released outbound.${this.isComplete() ? ' Exercise complete — review your results.' : ''}`);
-    return this._finish(key, 'release', r, { checkpointId: 'B_OUTBOUND', valid: true, first, ctx });
+      `${def.label} released outbound. Next: ${this._nextLabel(key)}.`);
+    return this._finish(key, 'release', r, { checkpointId: `${key}_OUTBOUND`, valid: true, first, ctx });
   }
 
   _nextLabel(key) {
     const idx = this.scenario.order.indexOf(key);
     const next = this.scenario.order[idx + 1];
-    return next && !this.isComplete() ? `inspect ${this._pkg(next).label}` : 'review your results';
+    return next && !this.isComplete() ? `${this._pkg(next).label} is rolling in on the inbound conveyor` : 'review your results';
   }
 }
