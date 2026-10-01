@@ -92,7 +92,7 @@ export class DesktopInput {
       app.pack.click(hit.key);
       app.refreshUI();
     } else if (hit.kind === 'practice') {
-      app.info('The practice box is for VR grab practice. On desktop, use the buttons.');
+      app.info('Use the buttons on desktop.', 'info', 'VR practice only');
       app.refreshUI();
     }
   }

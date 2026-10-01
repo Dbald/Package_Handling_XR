@@ -129,3 +129,30 @@ Proposed gate: ≥ 4 of 5 complete both paths without intervention.
 | Learners may ignore a floating text panel | — | The panel is now a physical work-instruction console. The YOUR TASK band and step progress bar sit on screen. The light bar pulses with a chime on each new task. |
 
 **Still to record:** OS and browser version, a `?perf` reading at each station, and the five-person usability test.
+
+---
+
+## Session 3: first-time user test (Oct 1, 2026, a friend of the trainer, Quest 2, first time in the demo)
+
+**Observed**
+- Too much text on the console. The learner didn't read it, and it didn't feel like a game.
+- No overview of what the training is for before starting.
+- After a mistake there was nothing showing *how* to do it right.
+- At Station 2, didn't know that the trigger scans once the label is in the scan zone.
+- Missed the carton size suggestion on the order monitor.
+
+**Fixes**
+| Observation | Fix |
+|---|---|
+| Too many words, not gamified | The console was redesigned around one headline plus one line, with an icon, a step counter and progress bar, and amber key-chip hints. Padding and spacing are larger. Feedback cards have a title plus one line; details sit under the **Assist** toggle (VR) or **More** (desktop). The briefing is 3 goal cards. Results show a large score and station cards. |
+| Needs an intro that outlines the 3 objectives | Briefing cards: **Pack it right · Check it · Ship verified**. An `intro` video slot autoplays on the console with scoring paused, and **Watch intro** stays available. |
+| No correction after a mistake | Coaching-video slots per mistake code play once per session on the console, with Replay and Continue. |
+| Didn't know to pull the trigger to scan | A hint chip above the controller always says what the trigger does. In the scan zone it turns green and pulses, with a haptic tick: **PULL TRIGGER TO SCAN**. A floating PULL TRIGGER tag shows over the scan zone. The no-read message now says what to change. |
+| Carton suggestion didn't stand out | The order monitor has a large amber **USE CARTON [size]** card with the inner dimensions. The monitor frame glows during the carton step. A wrong carton says "too small" or "too big". |
+| Immersion | Event sounds were added (grab, drop, print, no-read, step chime, completion). Recorded-sound, ambience, music and voice-over slots are in `media/manifest.json`. See `media/README.md`. |
+
+**Re-test with a new first-time user:**
+- [ ] They can say the 3 objectives after the intro.
+- [ ] They scan at Station 2 without being told.
+- [ ] They pick the right carton first try.
+- [ ] Time to finish Station 1.

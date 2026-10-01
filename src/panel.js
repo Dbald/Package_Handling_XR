@@ -258,25 +258,26 @@ export class Panel {
 
   draw(spec) {
     const { ctx, w, h } = this;
-    const pad = 36;
+    const pad = 48;
+    const gap = 18;
     ctx.setTransform(this.ss, 0, 0, this.ss, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = '#10151b';
+    const bg = ctx.createLinearGradient(0, 0, 0, h);
+    bg.addColorStop(0, '#141b23');
+    bg.addColorStop(1, '#0d1217');
+    ctx.fillStyle = bg;
     ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = spec.accent ?? '#e0a526';
-    ctx.lineWidth = 8;
-    ctx.beginPath();
-    ctx.moveTo(0, 4);
-    ctx.lineTo(w, 4);
-    ctx.stroke();
+    ctx.fillStyle = spec.accent ?? '#e0a526';
+    ctx.fillRect(0, 0, w, 6);
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
 
-    // Buttons laid out bottom-up so body text never collides with them.
+    // ---- buttons, pinned to the bottom
     this.buttons = [];
     const rows = (spec.buttons ?? []).filter((r) => r && r.length);
-    const bh = spec.buttonHeight ?? 76;
-    const gap = 14;
-    let by = h - pad - rows.length * bh - (rows.length - 1) * gap;
-    const buttonsTop = rows.length ? by - 12 : h - pad;
+    const bh = spec.buttonHeight ?? 74;
+    let by = h - pad - rows.length * bh - Math.max(0, rows.length - 1) * gap;
+    let bottom = rows.length ? by - gap : h - pad;
     for (const row of rows) {
       const bw = (w - pad * 2 - gap * (row.length - 1)) / row.length;
       row.forEach((b, i) => {
@@ -287,99 +288,166 @@ export class Panel {
       by += bh + gap;
     }
 
-    let y = pad;
-    ctx.textBaseline = 'top';
-    // Step progress: one segment per step (done / current / to do), so the
-    // learner always knows where they are in the procedure.
+    // ---- feedback card, directly above the buttons (same place every time)
+    if (spec.feedback && (spec.feedback.title || spec.feedback.text)) {
+      const tone = TONES[spec.feedback.tone] ?? TONES.info;
+      const fh = 116;
+      const fy = bottom - fh;
+      ctx.fillStyle = '#1a222c';
+      roundRect(ctx, pad, fy, w - pad * 2, fh, 18);
+      ctx.fill();
+      ctx.fillStyle = tone.color;
+      roundRect(ctx, pad, fy, 12, fh, 6);
+      ctx.fill();
+      drawSymbol(ctx, tone.symbol, pad + 34, fy + 28, 60, tone.color);
+      const tx = pad + 112;
+      const maxW = w - tx - pad - 20;
+      ctx.fillStyle = tone.color;
+      ctx.font = `bold 38px ${FONT}`;
+      ctx.fillText(fit(ctx, spec.feedback.title || tone.label, maxW), tx, fy + 16);
+      if (spec.feedback.text) {
+        ctx.fillStyle = '#e8edf2';
+        ctx.font = `32px ${FONT}`;
+        ctx.fillText(fit(ctx, spec.feedback.text, maxW), tx, fy + 64);
+      }
+      bottom = fy - gap;
+    }
+
+    // ---- header: station chip, step counter, progress
+    let y = pad - 6;
+    if (spec.chip || spec.stepLabel) {
+      if (spec.chip) {
+        ctx.font = `bold 24px ${FONT}`;
+        const cw = ctx.measureText(spec.chip.toUpperCase()).width + 32;
+        ctx.fillStyle = '#232d38';
+        roundRect(ctx, pad, y, cw, 42, 21);
+        ctx.fill();
+        ctx.fillStyle = '#aab7c4';
+        ctx.fillText(spec.chip.toUpperCase(), pad + 16, y + 10);
+      }
+      if (spec.stepLabel) {
+        ctx.font = `bold 28px ${FONT}`;
+        ctx.fillStyle = '#e0a526';
+        ctx.textAlign = 'right';
+        ctx.fillText(spec.stepLabel, w - pad, y + 7);
+        ctx.textAlign = 'left';
+      }
+      y += 58;
+    }
     if (spec.progress) {
       const { i, n } = spec.progress;
-      const gap = 6;
-      const sw = (w - pad * 2 - gap * (n - 1)) / n;
+      const g = 8;
+      const sw = (w - pad * 2 - g * (n - 1)) / n;
       for (let k = 0; k < n; k++) {
-        ctx.fillStyle = k < i - 1 ? '#2fae66' : k === i - 1 ? '#e0a526' : '#2a333d';
-        ctx.fillRect(pad + k * (sw + gap), 16, sw, k === i - 1 ? 12 : 8);
+        ctx.fillStyle = k < i - 1 ? '#2fae66' : k === i - 1 ? '#e0a526' : '#26303b';
+        roundRect(ctx, pad + k * (sw + g), y, sw, 10, 5);
+        ctx.fill();
       }
-      y += 8;
+      y += 10 + gap + 8;
     }
-    if (spec.kicker) {
-      ctx.fillStyle = '#9aa7b4';
-      ctx.font = `600 26px ${FONT}`;
-      ctx.fillText(spec.kicker.toUpperCase(), pad, y);
-      y += 38;
-    }
+
+    // ---- hero: icon + task title + one line
     if (spec.title) {
-      const size = spec.titleSize ?? 46;
+      const size = spec.titleSize ?? 66;
+      const iconS = spec.icon ? 128 : 0;
+      const tx = pad + (iconS ? iconS + 32 : 0);
+      const maxW = w - tx - pad;
+      if (spec.icon) {
+        ctx.fillStyle = '#1f2833';
+        roundRect(ctx, pad, y, iconS, iconS, 24);
+        ctx.fill();
+        drawIcon(ctx, spec.icon, pad + 18, y + 18, iconS - 36, spec.iconColor ?? '#e0a526');
+      }
       ctx.font = `bold ${size}px ${FONT}`;
-      const inset = spec.objective ? 26 : 0;
-      const lines = wrapText(ctx, spec.title, w - pad * 2 - inset * 2);
-      if (spec.objective) {
-        // Highlighted "YOUR TASK" band: the one thing to do right now.
-        const bandH = 40 + lines.length * (size + 8) + 14;
-        ctx.fillStyle = '#2b2410';
-        roundRect(ctx, pad, y, w - pad * 2, bandH, 12);
-        ctx.fill();
-        ctx.fillStyle = '#e0a526';
-        ctx.fillRect(pad, y, 12, bandH);
-        ctx.font = `bold 24px ${FONT}`;
-        ctx.fillText('YOUR TASK', pad + inset, y + 12);
-        y += 44;
-        ctx.font = `bold ${size}px ${FONT}`;
-      }
       ctx.fillStyle = '#ffffff';
-      for (const line of lines) {
-        ctx.fillText(line, pad + inset, y);
-        y += size + 8;
+      const tl = wrapText(ctx, spec.title, maxW).slice(0, 2);
+      let ty = y + (spec.icon && tl.length === 1 && !spec.subtitle ? (iconS - size) / 2 : 2);
+      for (const line of tl) {
+        ctx.fillText(line, tx, ty);
+        ty += size + 8;
       }
-      y += spec.objective ? 22 : 6;
+      if (spec.subtitle) {
+        ctx.font = `${spec.subtitleSize ?? 36}px ${FONT}`;
+        ctx.fillStyle = '#b6c2ce';
+        for (const line of wrapText(ctx, spec.subtitle, maxW).slice(0, 2)) {
+          ctx.fillText(line, tx, ty + 4);
+          ty += (spec.subtitleSize ?? 36) + 8;
+        }
+      }
+      y = Math.max(y + iconS, ty) + gap + 6;
     }
-    const bodySize = spec.bodySize ?? 32;
-    const drawLines = (text, { color = '#dbe2ea', size = bodySize, bold = false, bullet = false } = {}) => {
-      ctx.font = `${bold ? 'bold ' : ''}${size}px ${FONT}`;
-      ctx.fillStyle = color;
-      const indent = bullet ? 30 : 0;
-      const lines = wrapText(ctx, text, w - pad * 2 - indent);
-      lines.forEach((line, i) => {
-        if (y + size > buttonsTop) return;
-        if (bullet && i === 0) ctx.fillText('•', pad + 4, y);
-        ctx.fillText(line, pad + indent, y);
-        y += size + 9;
-      });
-    };
-    for (const item of spec.body ?? []) {
-      if (typeof item === 'string') drawLines(item);
-      else if (item.gap) y += item.gap;
-      else drawLines(item.text, item);
-      y += 4;
-    }
-    if (spec.feedback?.text) {
-      y += 8;
-      const tone = TONES[spec.feedback.tone] ?? TONES.info;
-      ctx.font = `${bodySize - 2}px ${FONT}`;
-      const lines = wrapText(ctx, spec.feedback.text, w - pad * 2 - 110);
-      const labelH = tone.label ? 36 : 0;
-      const boxH = Math.min(labelH + lines.length * (bodySize + 6) + 30, buttonsTop - y - 6);
-      if (boxH > 50) {
-        ctx.fillStyle = '#1b232c';
-        roundRect(ctx, pad, y, w - pad * 2, boxH, 12);
+
+    // ---- controller hint chips: [TRIGGER] scan  [GRIP] grab
+    if (spec.hints?.length && y + 58 <= bottom) {
+      let x = pad;
+      for (const hnt of spec.hints) {
+        ctx.font = `bold 28px ${FONT}`;
+        const kw = ctx.measureText(hnt.key).width + 32;
+        ctx.font = `32px ${FONT}`;
+        const tw = ctx.measureText(hnt.text).width;
+        if (x + kw + tw + 30 > w - pad) break;
+        ctx.fillStyle = '#e0a526';
+        roundRect(ctx, x, y, kw, 54, 12);
         ctx.fill();
-        ctx.fillStyle = tone.color;
-        ctx.fillRect(pad, y, 12, boxH);
-        drawSymbol(ctx, tone.symbol, pad + 30, y + 16, 54, tone.color);
-        let ty = y + 14;
-        if (tone.label) {
-          ctx.fillStyle = tone.color;
-          ctx.font = `bold 28px ${FONT}`;
-          ctx.fillText(tone.label, pad + 104, ty);
-          ty += labelH;
-        }
-        ctx.fillStyle = '#ffffff';
-        ctx.font = `${bodySize - 2}px ${FONT}`;
-        for (const line of lines) {
-          if (ty + bodySize > y + boxH) break;
-          ctx.fillText(line, pad + 104, ty);
-          ty += bodySize + 6;
-        }
+        ctx.fillStyle = '#14100a';
+        ctx.font = `bold 28px ${FONT}`;
+        ctx.fillText(hnt.key, x + 16, y + 13);
+        ctx.fillStyle = '#e8edf2';
+        ctx.font = `32px ${FONT}`;
+        ctx.fillText(hnt.text, x + kw + 14, y + 10);
+        x += kw + tw + 52;
       }
+      y += 54 + gap + 6;
+    }
+
+    // ---- objective cards (briefings): icon, two-word title, short line
+    if (spec.cards?.length) {
+      const n = spec.cards.length;
+      const cw = (w - pad * 2 - gap * (n - 1)) / n;
+      const ch = Math.min(280, bottom - y);
+      if (ch > 120) {
+        spec.cards.forEach((c, i) => {
+          const cx = pad + i * (cw + gap);
+          ctx.fillStyle = '#1a222c';
+          roundRect(ctx, cx, y, cw, ch, 20);
+          ctx.fill();
+          ctx.fillStyle = '#e0a526';
+          ctx.font = `bold 26px ${FONT}`;
+          ctx.fillText(String(i + 1), cx + 22, y + 18);
+          drawIcon(ctx, c.icon, cx + cw / 2 - 44, y + 24, 88, '#e0a526');
+          ctx.textAlign = 'center';
+          ctx.fillStyle = '#ffffff';
+          ctx.font = `bold 38px ${FONT}`;
+          ctx.fillText(fit(ctx, c.title, cw - 24), cx + cw / 2, y + 128);
+          ctx.fillStyle = '#b6c2ce';
+          ctx.font = `29px ${FONT}`;
+          wrapText(ctx, c.text, cw - 36).slice(0, 2).forEach((line, k) => ctx.fillText(line, cx + cw / 2, y + 180 + k * 34));
+          ctx.textAlign = 'left';
+        });
+        y += ch + gap;
+      }
+    }
+
+    // ---- free body lines (help, results, setup notes)
+    const bodySize = spec.bodySize ?? 30;
+    for (const item of spec.body ?? []) {
+      if (typeof item === 'object' && item.gap) {
+        y += item.gap;
+        continue;
+      }
+      const text = typeof item === 'string' ? item : item.text;
+      const size = (typeof item === 'object' && item.size) || bodySize;
+      ctx.font = `${typeof item === 'object' && item.bold ? 'bold ' : ''}${size}px ${FONT}`;
+      ctx.fillStyle = (typeof item === 'object' && item.color) || '#dbe2ea';
+      const bullet = typeof item === 'object' && item.bullet;
+      const indent = bullet ? 30 : 0;
+      for (const [k, line] of wrapText(ctx, text, w - pad * 2 - indent).entries()) {
+        if (y + size > bottom) break;
+        if (bullet && k === 0) ctx.fillText('•', pad + 4, y);
+        ctx.fillText(line, pad + indent, y);
+        y += size + 10;
+      }
+      y += 6;
     }
   }
 
@@ -388,27 +456,27 @@ export class Panel {
     const variants = {
       primary: ['#1f6fd1', '#ffffff'],
       danger: ['#8f2b2b', '#ffffff'],
-      default: ['#2a333d', '#eef2f6'],
-      toggle: ['#2a333d', '#eef2f6'],
+      default: ['#25303b', '#eef2f6'],
+      ghost: ['#161d25', '#aab7c4'],
     };
     let [bg, fg] = variants[b.variant ?? 'default'] ?? variants.default;
-    if (b.active) bg = '#3c5a2f';
+    if (b.active) bg = '#355a2b';
     if (b.enabled === false) {
-      bg = '#1a2027';
-      fg = '#5d6875';
+      bg = '#171d24';
+      fg = '#55606c';
     }
     ctx.fillStyle = bg;
-    roundRect(ctx, b.x, b.y, b.w, b.h, 14);
+    roundRect(ctx, b.x, b.y, b.w, b.h, 16);
     ctx.fill();
     // Hover is an overlay mesh (see setHover), so this never changes on aim.
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.fillStyle = fg;
     let size = b.h > 70 ? 30 : 26;
     ctx.font = `600 ${size}px ${FONT}`;
-    let label = (b.active ? '● ' : '') + b.label;
-    while (ctx.measureText(label).width > b.w - 20 && size > 18) {
+    const label = (b.active ? '● ' : '') + b.label;
+    while (ctx.measureText(label).width > b.w - 28 && size > 18) {
       size -= 2;
       ctx.font = `600 ${size}px ${FONT}`;
     }
@@ -418,6 +486,144 @@ export class Panel {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
   }
+}
+
+/** Shrink-to-fit with an ellipsis for single-line text. */
+function fit(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let t = text;
+  while (t.length > 3 && ctx.measureText(`${t}…`).width > maxW) t = t.slice(0, -1);
+  return `${t.trimEnd()}…`;
+}
+
+/** Simple line pictograms for task types (drawn, so no image assets). */
+export function drawIcon(ctx, name, x, y, s, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = Math.max(3, s * 0.07);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  const L = (pts, close = false) => {
+    ctx.beginPath();
+    pts.forEach(([px, py], i) => (i ? ctx.lineTo(px * s, py * s) : ctx.moveTo(px * s, py * s)));
+    if (close) ctx.closePath();
+    ctx.stroke();
+  };
+  switch (name) {
+    case 'scan':
+      for (const [bx, bw2] of [[0.1, 0.06], [0.22, 0.03], [0.3, 0.08], [0.44, 0.03], [0.52, 0.06], [0.64, 0.03], [0.72, 0.08], [0.86, 0.04]]) ctx.fillRect(bx * s, 0.18 * s, bw2 * s, 0.5 * s);
+      ctx.fillStyle = '#e04848';
+      ctx.fillRect(0.02 * s, 0.42 * s, 0.96 * s, 0.05 * s);
+      break;
+    case 'box':
+      L([[0.5, 0.08], [0.92, 0.28], [0.5, 0.48], [0.08, 0.28]], true);
+      L([[0.08, 0.28], [0.08, 0.74], [0.5, 0.94], [0.92, 0.74], [0.92, 0.28]]);
+      L([[0.5, 0.48], [0.5, 0.94]]);
+      break;
+    case 'tape':
+      ctx.beginPath();
+      ctx.arc(0.36 * s, 0.42 * s, 0.26 * s, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0.36 * s, 0.42 * s, 0.1 * s, 0, Math.PI * 2);
+      ctx.stroke();
+      L([[0.36, 0.68], [0.96, 0.68]]);
+      L([[0.62, 0.42], [0.96, 0.62]]);
+      break;
+    case 'scale':
+      L([[0.06, 0.6], [0.94, 0.6], [0.86, 0.9], [0.14, 0.9]], true);
+      L([[0.2, 0.6], [0.2, 0.46], [0.8, 0.46], [0.8, 0.6]]);
+      ctx.font = `bold ${0.26 * s}px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText('kg', 0.5 * s, 0.1 * s);
+      ctx.textAlign = 'left';
+      break;
+    case 'label':
+      L([[0.18, 0.06], [0.82, 0.06], [0.82, 0.94], [0.18, 0.94]], true);
+      for (const ly of [0.22, 0.34]) L([[0.3, ly], [0.7, ly]]);
+      for (const [bx, bw2] of [[0.3, 0.05], [0.4, 0.03], [0.47, 0.07], [0.58, 0.03], [0.65, 0.05]]) ctx.fillRect(bx * s, 0.5 * s, bw2 * s, 0.3 * s);
+      break;
+    case 'ship':
+      L([[0.06, 0.3], [0.52, 0.3], [0.52, 0.78], [0.06, 0.78]], true);
+      L([[0.6, 0.54], [0.94, 0.54]]);
+      L([[0.78, 0.38], [0.94, 0.54], [0.78, 0.7]]);
+      break;
+    case 'bin':
+      L([[0.1, 0.3], [0.9, 0.3], [0.78, 0.92], [0.22, 0.92]], true);
+      L([[0.36, 0.08], [0.64, 0.08], [0.64, 0.3]]);
+      L([[0.36, 0.08], [0.36, 0.3]]);
+      L([[0.4, 0.5], [0.6, 0.72]]);
+      L([[0.6, 0.5], [0.4, 0.72]]);
+      break;
+    case 'eye':
+      ctx.beginPath();
+      ctx.moveTo(0.04 * s, 0.5 * s);
+      ctx.quadraticCurveTo(0.5 * s, 0.02 * s, 0.96 * s, 0.5 * s);
+      ctx.quadraticCurveTo(0.5 * s, 0.98 * s, 0.04 * s, 0.5 * s);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0.5 * s, 0.5 * s, 0.15 * s, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'decide':
+      L([[0.06, 0.52], [0.2, 0.68], [0.42, 0.34]]);
+      L([[0.6, 0.34], [0.92, 0.68]]);
+      L([[0.92, 0.34], [0.6, 0.68]]);
+      break;
+    case 'fill':
+      for (const [cx, cy, r] of [[0.32, 0.42, 0.2], [0.66, 0.42, 0.2], [0.5, 0.68, 0.2]]) {
+        ctx.beginPath();
+        ctx.ellipse(cx * s, cy * s, r * s, r * 0.7 * s, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      break;
+    case 'gear':
+      ctx.beginPath();
+      ctx.arc(0.5 * s, 0.5 * s, 0.24 * s, 0, Math.PI * 2);
+      ctx.stroke();
+      for (let k = 0; k < 8; k++) {
+        const a = (k * Math.PI) / 4;
+        L([[0.5 + Math.cos(a) * 0.32, 0.5 + Math.sin(a) * 0.32], [0.5 + Math.cos(a) * 0.44, 0.5 + Math.sin(a) * 0.44]]);
+      }
+      break;
+    case 'star': {
+      ctx.beginPath();
+      for (let k = 0; k < 10; k++) {
+        const a = -Math.PI / 2 + (k * Math.PI) / 5;
+        const r = k % 2 ? 0.2 : 0.46;
+        ctx.lineTo((0.5 + Math.cos(a) * r) * s, (0.52 + Math.sin(a) * r) * s);
+      }
+      ctx.closePath();
+      ctx.fill();
+      break;
+    }
+    case 'pause':
+      ctx.fillRect(0.24 * s, 0.16 * s, 0.17 * s, 0.68 * s);
+      ctx.fillRect(0.59 * s, 0.16 * s, 0.17 * s, 0.68 * s);
+      break;
+    case 'play':
+      ctx.beginPath();
+      ctx.moveTo(0.26 * s, 0.14 * s);
+      ctx.lineTo(0.84 * s, 0.5 * s);
+      ctx.lineTo(0.26 * s, 0.86 * s);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    case 'list':
+      L([[0.08, 0.1], [0.92, 0.1], [0.92, 0.72], [0.08, 0.72]], true);
+      for (const ly of [0.28, 0.42, 0.56]) L([[0.2, ly], [0.8, ly]]);
+      L([[0.4, 0.72], [0.36, 0.92]]);
+      L([[0.6, 0.72], [0.64, 0.92]]);
+      L([[0.28, 0.92], [0.72, 0.92]]);
+      break;
+    default:
+      ctx.beginPath();
+      ctx.arc(0.5 * s, 0.5 * s, 0.4 * s, 0, Math.PI * 2);
+      ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** Small billboard label used for hover tags and local tool prompts. */

@@ -43,7 +43,16 @@ WebXR needs **HTTPS**. `localhost` works for desktop, but the headset needs a re
 | B / Y | Help and pause panel |
 | Panel buttons | Assisted equivalents of every step, for seated or limited-reach use and for desktop. Every option is always offered (all carton sizes, all destinations), so the buttons never give away the answer. |
 
-**Guidance design.** Instructions appear on a physical **work-instruction console**: a mounted display with a bezel, floor stand and status light. Its **YOUR TASK** band shows the single thing to do now, and a segmented bar shows progress through the steps. When the task changes, the light bar pulses with a chime. Floating prompts mark the relevant tool, for example *PICK UP SCANNER* and then *SCAN TOTE LABEL*. The **order monitor** on the left lists the order and recommends the carton size, as a real WMS does.
+**Guidance design.** Instructions appear on a physical **work-instruction console**: a mounted display with a bezel, floor stand and status light. Each screen shows a station chip, a step counter and progress bar, an icon, and **one short headline with one line under it**. Controller hints ("TRIGGER · scan") sit in amber key chips. When the task changes, the light bar pulses with a chime. Feedback is a coloured card: a title such as *Wrong carton* plus one line, with the full explanation under **More** on desktop. Detailed tips live behind an **Assist** toggle. Prompts float over the relevant tool (*PICK UP SCANNER*, then *SCAN TOTE LABEL*). A hint chip above the controller says what the trigger does right now. At Station 2 it turns green and pulses, with a haptic tick, when the label is in the scan zone: **PULL TRIGGER TO SCAN**. The **order monitor** on the left lists the order. Until the carton is built, a large amber **USE CARTON M** card on it and a glowing frame make the carton size stand out.
+
+**Videos, sounds and music.** Record them, drop the files into `media/` and list them in `media/manifest.json`. No code changes are needed.
+- The **intro** video plays on the console when the shift briefing opens.
+- A **coaching clip** plays the first time a learner makes the matching mistake.
+- Scoring pauses while a video plays, and every video has Skip and Replay.
+- Recorded sounds replace the built-in synthesized placeholders.
+- Ambience (on by default) and music (off by default) loops can each be switched in Help.
+
+[`media/README.md`](media/README.md) lists every slot, when it plays, the file specs, the voice-over lines and a recording checklist in priority order.
 
 **Performance on Quest 2.**
 - Hovering a button moves a small overlay instead of redrawing the panel.
@@ -66,7 +75,10 @@ src/pack/station.js    Station 1 interactions: scanner gun, tape gun, printer, c
 src/pack/scene.js      Station 1 geometry: tote, exception bin, carton slots, pack scale, monitor, rollers
 src/scene.js           Station 2 geometry                 src/dressing.js  warehouse hall (textures, racking, AO)
 src/console.js         instruction console + ?perf meter  src/merge.js     static draw-call batching
-src/xr-input.js        controllers: grab, ray select, tools, haptics, tracking loss
+src/xr-input.js        controllers: grab, ray select, tools, haptics, tracking loss, trigger hint chips
+src/copy.js            short learner-facing copy: result code → headline + one line
+src/media.js           manifest loader, intro/coaching video player on the console
+src/audio.js           sound effects, ambience/music loops; recorded files override synth placeholders
 src/desktop-input.js   mouse look, click-select, keyboard
 ```
 
@@ -106,6 +118,7 @@ Session data (anonymous ID, scenario version, item or package, checkpoint, actio
 | Desktop flow through both stations, results, replay, help-pause, 200 % zoom (Playwright) | Scanner-gun aim feel; legibility of the order monitor |
 | Simulated-controller runs of Station 1: aimed scanner reads (front- and top-facing barcodes), exception bin, carton build, void fill, tape gun (rejected when too far), printer trigger, label, conveyor | 72 Hz frame budget with both stations. Measured here: 91 draw calls / ~4.9k triangles after batching, about the same as the build that ran smoothly. |
 | Station 2 simulated-controller suite (grab, scan zone, tracking loss, disconnect/resume, missed drop, exit VR) | Fade transition between stations |
+| Video logic: intro autoplay, scoring pause, Continue/Skip, coaching clip once per session | Recorded videos and sound on the headset (autoplay with sound, caption legibility) |
 | Payload ≈ 1.0 MB (≈ 250 KB gzipped) against the 15 MB budget | |
 
 Desktop and emulation results support development. They cannot satisfy the headset release gate (PRD §12).

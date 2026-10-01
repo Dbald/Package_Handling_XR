@@ -240,10 +240,10 @@ export class PackStation {
   canUse() {
     const e = this.engine;
     if (this.app.session.phase !== 'pack' || e.phase === 'setup' || e.phase === 'briefing') {
-      return { ok: false, message: 'Start Station 1 from the briefing panel first. During setup, practise with the grey box.' };
+      return { ok: false, title: 'Not started', message: 'Press Start on the screen first.' };
     }
-    if (e.phase === 'complete') return { ok: false, message: 'Station 1 is complete. Continue to Station 2, or replay Station 1 with a new order.' };
-    if (e.isPaused()) return { ok: false, message: 'Training is paused. Select Resume to continue.' };
+    if (e.phase === 'complete') return { ok: false, title: 'Station done', message: 'Go on, or replay with a new order.' };
+    if (e.isPaused()) return { ok: false, title: 'Paused', message: 'Select Resume.' };
     return { ok: true };
   }
 
@@ -251,7 +251,7 @@ export class PackStation {
     const app = this.app;
     const u = this.canUse();
     if (!u.ok) {
-      app.info(u.message);
+      app.info(u.message, 'info', u.title);
       app.xrInput.haptic(c, 0.4, 80);
       app.refreshUI();
       return false;
@@ -259,7 +259,7 @@ export class PackStation {
     const e = this.engine;
     const item = this.itemKey(key);
     if (item && ['box', 'exception'].includes(e.items[item].loc)) {
-      app.info(e.items[item].loc === 'box' ? 'Packed items stay in the carton.' : 'That item stays in the exception bin for a lead to resolve.');
+      app.info(e.items[item].loc === 'box' ? 'Packed items stay in the carton.' : 'Extra items stay in the bin.', 'info', 'Stays put');
       app.refreshUI();
       return false;
     }
@@ -279,6 +279,7 @@ export class PackStation {
     c.held = key;
     this.loc[key] = 'held';
     if (item) this.selected = item;
+    app.sfx.play('grab');
     app.xrInput.haptic(c, 0.35, 40);
     app.refreshUI();
     return true;
@@ -334,6 +335,7 @@ export class PackStation {
       }
     }
     this.sync();
+    if (!TOOL_KEYS.includes(key)) app.sfx.play('drop');
     if (r) app.showResult(r, { controller: c });
     app.refreshUI();
   }
@@ -383,7 +385,7 @@ export class PackStation {
     pos.y = -this.app.settings.benchHeight + h / 2;
     this.app.tween(obj, { pos, quat, dur: 0.4, ease: 'in' });
     this.loc[key] = 'floor';
-    this.app.info(`${this.s.items[item]?.name ?? 'Item'} dropped — no penalty. Select Retrieve items to put it back in the tote.`);
+    this.app.info('No penalty. Select Retrieve items.', 'info', 'Dropped');
   }
 
   floorItems() {
@@ -440,7 +442,7 @@ export class PackStation {
     const hit = this.scannerHit();
     let r;
     if (!hit) {
-      r = { tone: 'warning', message: 'No read — point the red beam at a barcode (tote label or product label) and pull the trigger.' };
+      r = { code: 'NO_READ', tone: 'warning', message: 'No read — point the red beam at a barcode (tote label or product label) and pull the trigger.' };
       this.scanFlash = { ok: false, until: performance.now() + 1200 };
     } else if (hit.key === 'pk:tote') {
       r = this.engine.scanTote({ input: 'xr' });
@@ -468,14 +470,14 @@ export class PackStation {
     const e = this.engine;
     let r = null;
     if (!e.carton || this.loc['pk:box'] !== 'home') {
-      r = { tone: 'info', message: 'Build a carton on the pack scale first; then tape it shut there.' };
+      r = { code: 'TAPE_NO_CARTON', tone: 'info', message: 'Build a carton on the pack scale first; then tape it shut there.' };
     } else if (e.sealed) {
       r = { tone: 'info', message: 'The carton is already sealed.' };
     } else {
       const n = this.tapeNoseInCarton();
       const [w, h] = this.carton.size;
       if (Math.abs(n.x) > w / 2 + 0.15 || Math.abs(n.z) > 0.2 || n.y < h - 0.08 || n.y > h + 0.25) {
-        r = { tone: 'info', message: 'Hold the tape gun over one end of the carton seam, pull the trigger and draw it across the top.' };
+        r = { code: 'TAPE_FAR', tone: 'info', message: 'Hold the tape gun over one end of the carton seam, pull the trigger and draw it across the top.' };
       } else if (e.sealBlocker()) {
         // Same validated (and scored) refusal as any other seal attempt.
         r = e.seal({ input: 'xr' });
@@ -485,7 +487,7 @@ export class PackStation {
           const x = THREE.MathUtils.clamp(n.x, -w / 2, w / 2);
           this.tape.a = this.tape.b = x;
         }
-        app.info('Keep the trigger held and draw the tape gun along the top seam.');
+        app.info('Keep it held. Drag along the top.', 'info', 'Taping…');
       }
     }
     if (r) app.showResult(r, { controller: c });
@@ -563,7 +565,7 @@ export class PackStation {
         break;
       case 'retrieve':
         for (const k of this.floorItems()) this.goHome(k);
-        this.app.info('Dropped items are back in the tote. No penalty.');
+        this.app.info('No penalty.', 'info', 'Back in the tote');
         break;
       default: break;
     }
@@ -599,7 +601,7 @@ export class PackStation {
     const item = this.itemKey(key);
     if (item) {
       this.selected = item;
-      app.info(`Selected: ${this.s.items[item].name}. Use Scan item, Pack in carton or To exception bin.`);
+      app.info('Use Scan, Pack or To bin.', 'info', `Selected: ${this.s.items[item].name}`);
       return;
     }
     const map = {
@@ -627,6 +629,10 @@ export class PackStation {
       this.carton.setFlaps(this.flapK);
     }
     this.updateTape(now);
+    // Pulse the monitor frame while the carton size is the thing to read.
+    const glow = w.monitorGlow;
+    glow.visible = e.phase === 'exercise' && e.step() === 'carton';
+    if (glow.visible) glow.userData.mat.color.setHSL(0.11, 1, 0.45 + 0.15 * Math.sin(now / 180));
     // Scanner beam while held.
     const beam = w.scanner.group.userData.beam;
     const held = this.isHeld('pk:scanner');
@@ -659,8 +665,9 @@ export class PackStation {
       })),
       exceptions: s.itemOrder.filter((k) => !s.items[k].onOrder && (e.items[k].scanned || e.items[k].loc === 'exception'))
         .map((k) => ({ name: s.items[k].name, sku: s.items[k].sku, state: e.items[k].loc === 'exception' ? 'diverted' : 'flagged' })),
-      recommended: `${s.correctCarton} (${s.cartons[s.correctCarton].inner})`,
-      carton: e.carton ? `${e.carton} (${s.cartons[e.carton].inner})` : null,
+      recSize: s.correctCarton,
+      recInner: `${s.cartons[e.carton ?? s.correctCarton].inner} inside`,
+      carton: e.carton,
       weight: (e.carton ? e.measuredWeightKg() : 0).toFixed(2),
       range: `${min.toFixed(2)}–${max.toFixed(2)}`,
       sealed: e.sealed,

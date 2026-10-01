@@ -40,6 +40,7 @@ if (shots) fs.mkdirSync(shots, { recursive: true });
 
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_PATH || undefined,
+  // Autoplay flag: the headless test has no real user gesture before videos play.
   args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'],
 });
 const errors = [];
@@ -153,7 +154,7 @@ try {
   assert.equal(sr.score, 200);
   assert.equal(sr.status, 'proficient');
   assert.ok(await page.isVisible('#results table'), 'results table shown');
-  assert.match(await page.textContent('#title'), /proficiency met/);
+  assert.match(await page.textContent('#side'), /proficiency met/);
   await shot('07-results');
   await act('results:pack');
   await shot('08-results-details');
@@ -201,7 +202,7 @@ try {
   assert.equal(r.score, 70);
   const sr2 = await sessionResults();
   assert.equal(sr2.status, 'incomplete', 'skipping Station 1 never passes');
-  assert.match(await page.textContent('#title'), /Station 1 skipped/);
+  assert.match(await page.textContent('#side'), /Station 1 skipped/);
 
   // Narrow / zoomed layout stays usable (1280×720 at 200% ≈ 640×360 CSS px).
   await page.setViewportSize({ width: 640, height: 360 });
@@ -220,6 +221,10 @@ try {
   await vrPackLogic(browser, errors);
   assert.deepEqual(errors, [], `page errors:\n${errors.join('\n')}`);
   console.log('station 1 pack-out VR logic (simulated controllers): OK');
+
+  await videoLogic(browser, errors);
+  assert.deepEqual(errors, [], `page errors:\n${errors.join('\n')}`);
+  console.log('intro + coaching videos: OK');
 } catch (err) {
   failed = true;
   console.error(err);
@@ -348,7 +353,8 @@ async function vrLogic(browser, errors) {
   await grip(Z.x + 0.09 * w, cy, Z.z - d / 2 + 0.02, 0); // label faces the user
   await ev(() => globalThis.__trigger());
   assert.equal(await st('B'), 'accepted');
-  assert.match(await ev(() => globalThis.__app.feedback.text), /No read/);
+  assert.equal(await ev(() => globalThis.__app.feedback.title), 'No read');
+  assert.match(await ev(() => globalThis.__app.feedback.text), /Turn the barcode/);
   await grip(cx + 0.09 * w * 2, cy, Z.z + d / 2, Math.PI); // turned toward the scanner
   const align = await ev(() => globalThis.__app.scanAlignment('B'));
   assert.ok(align.aligned, `barcode aligned: ${JSON.stringify(align)}`);
@@ -542,7 +548,8 @@ async function vrPackLogic(browser, errors) {
     const c = globalThis.__app.xrInput.controllers[0];
     c.ray.visible = true;
   });
-  await page.waitForTimeout(150); // let a frame compute the ray hover
+  // Wait for a rendered frame to put the ray's hover on the printer.
+  await page.waitForFunction(() => globalThis.__app.xrInput.controllers[0].hover?.key === 'pk:printer', null, { timeout: 5000 });
   await trig();
   assert.equal(await pe((e) => e.labelPrinted), true, 'trigger on the printer prints the label');
 
@@ -563,5 +570,52 @@ async function vrPackLogic(browser, errors) {
   const r = await pe((e) => e.results());
   assert.equal(r.complete, true);
   assert.equal(r.score, 100, `pack VR run should be perfect: ${JSON.stringify(r.checkpoints.filter((c) => c.status !== 'passed'))}`);
+  await page.close();
+}
+
+// ---------------------------------------------------------------------------
+// Video slots. The test checks the player logic, not the browser's codec
+// support: the <video> element's loading/playback is stubbed so headless
+// Chromium can't reject it, and "ended" is dispatched by hand. Intro
+// autoplays on the briefing and pauses scoring; a mistake plays its coaching
+// clip once per session.
+async function videoLogic(browser, errors) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  page.on('pageerror', (e) => errors.push(`pageerror(video): ${e.message}`));
+  await page.goto(base);
+  await page.waitForFunction(() => globalThis.__boot?.isReady, null, { timeout: 30000 });
+  await page.click('#welcome-preview');
+  await page.evaluate(() => {
+    const { video } = globalThis.__app;
+    const el = video.el;
+    let src = '';
+    Object.defineProperty(el, 'src', { get: () => src, set: (v) => { src = v; } });
+    el.play = () => Promise.resolve();
+    el.pause = () => {};
+    video.setFiles({ intro: 'video/intro.mp4', 'pack:CARTON_WRONG': 'video/carton.mp4' });
+  });
+  const ev = (fn) => page.evaluate(fn);
+  const act = (id) => page.evaluate((i) => globalThis.__app.dispatch(i, 'desktop'), id);
+  await act('continue');
+  assert.equal(await ev(() => globalThis.__app.video.current?.key), 'intro', 'intro autoplays on the briefing');
+  assert.equal(await ev(() => globalThis.__app.session.pauseReasons.has('video')), true, 'scoring paused during video');
+  assert.equal(await ev(() => globalThis.__app.video.mesh.visible), true);
+  assert.equal(await ev(() => globalThis.__app.video.el.src), 'media/video/intro.mp4');
+  await ev(() => globalThis.__app.video.el.dispatchEvent(new Event('ended')));
+  assert.equal(await ev(() => globalThis.__app.video.current?.ended), true);
+  await page.waitForSelector('#actions button[data-id="video:skip"]');
+  assert.match(await page.textContent('#actions button[data-id="video:skip"]'), /Continue/);
+  await act('video:skip');
+  assert.equal(await ev(() => globalThis.__app.session.isPaused()), false);
+  assert.equal(await ev(() => globalThis.__app.video.mesh.visible), false);
+  // "Watch intro" button is offered after the autoplay.
+  assert.ok(await page.isVisible('#actions button[data-id="video:intro"]'));
+  await act('station:pack');
+  await act('pk:scan:tote');
+  await act('pk:carton:L'); // mistake → coaching clip
+  assert.equal(await ev(() => globalThis.__app.video.current?.key), 'pack:CARTON_WRONG');
+  await act('video:skip');
+  await act('pk:carton:S'); // same mistake again → no repeat
+  assert.equal(await ev(() => globalThis.__app.video.current), null, 'coaching plays once per session');
   await page.close();
 }

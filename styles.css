@@ -112,3 +112,15 @@ body[data-mode="xr"] .stage::after {
   .stage { flex: none; height: 50vh; min-height: 200px; }
   .side { width: auto; max-width: none; border-left: none; border-top: 1px solid #252e38; }
 }
+
+.lead { font-size: 1.05rem; color: #c9d3dd; }
+.hints kbd {
+  display: inline-block; padding: 2px 8px; border-radius: 6px; margin-right: 2px;
+  background: var(--accent); color: #14100a; font: 700 0.8rem system-ui, sans-serif;
+}
+.cards { list-style: none; counter-reset: c; display: grid; gap: 8px; padding: 0; margin: 10px 0; }
+.cards li { counter-increment: c; padding: 10px 12px 10px 40px; border-radius: 10px; background: var(--panel-2); position: relative; }
+.cards li::before { content: counter(c); position: absolute; left: 14px; top: 10px; color: var(--accent); font-weight: 700; }
+.cards strong { display: block; }
+.cards span { color: var(--muted); font-size: 0.92rem; }
+.feedback details { margin-top: 6px; color: var(--muted); font-size: 0.9rem; }

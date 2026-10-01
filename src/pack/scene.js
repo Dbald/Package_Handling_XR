@@ -492,6 +492,18 @@ export function buildPackStation(scenario) {
   const monSign = plane(textTexture('ORDER MONITOR', { w: 512, h: 72, font: 'bold 46px system-ui', bg: '#1b6ec2' }), 0.3, 0.042);
   monSign.position.set(0, M.h / 2 + 0.04, 0);
   monitor.add(monSign);
+  // Amber attention frame, lit while the learner should read the carton size.
+  const monitorGlow = new THREE.Group();
+  const glowMat = new THREE.MeshBasicMaterial({ color: 0xffc23d, toneMapped: false });
+  for (const [gw, gh, gx, gy] of [[M.w + 0.07, 0.014, 0, M.h / 2 + 0.03], [M.w + 0.07, 0.014, 0, -M.h / 2 - 0.03],
+    [0.014, M.h + 0.07, -M.w / 2 - 0.03, 0], [0.014, M.h + 0.07, M.w / 2 + 0.03, 0]]) {
+    const bar = box(gw, gh, 0.01, glowMat, gx, gy, 0.004);
+    bar.userData.noMerge = true;
+    monitorGlow.add(bar);
+  }
+  monitorGlow.visible = false;
+  monitorGlow.userData.mat = glowMat;
+  monitor.add(monitorGlow);
   station.add(monitor);
 
   // Outbound roller conveyor (right) and incoming roller conveyor (left).
@@ -566,7 +578,7 @@ export function buildPackStation(scenario) {
 
   return {
     station, tote, toteLabel, drawToteLabel, items, flats, cartons, shipLabel, pillow, label,
-    tapeGun, scanner, printer, printerScreen, scaleScreen, wms, releaseBtn, zones, monitor,
+    tapeGun, scanner, printer, printerScreen, scaleScreen, wms, releaseBtn, zones, monitor, monitorGlow,
   };
 }
 
@@ -615,7 +627,11 @@ export class WmsScreen {
     this.key = null;
   }
 
-  /** view: { open, orderId, tote, rows:[{name, sku, fragile, scanned, packed}], exceptions:[{name, sku, state}], carton, weight, range, sealed, confirmed, label } */
+  /**
+   * view: { open, orderId, tote, service, rows:[{name, sku, dims, fragile, scanned, packed}],
+   *         exceptions:[{name, sku, state}], recSize, recInner, carton, weight, range,
+   *         sealed, confirmed, label }
+   */
   show(view) {
     const key = JSON.stringify(view);
     if (key === this.key) return;
@@ -623,77 +639,103 @@ export class WmsScreen {
     const { ctx, canvas } = this;
     const W = canvas.width;
     const H = canvas.height;
+    const F = 'system-ui, sans-serif';
+    const pill = (x, y, text, on, color = '#2fae66') => {
+      ctx.font = `bold 20px ${F}`;
+      const w = ctx.measureText(text).width + 24;
+      ctx.fillStyle = on ? color : '#22344a';
+      ctx.beginPath();
+      ctx.roundRect?.(x, y, w, 32, 16) ?? ctx.rect(x, y, w, 32);
+      ctx.fill();
+      ctx.fillStyle = on ? '#08130c' : '#6f86a0';
+      ctx.fillText(text, x + 12, y + 17);
+      return w;
+    };
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
     ctx.fillStyle = '#0d1b2a';
     ctx.fillRect(0, 0, W, H);
     ctx.fillStyle = '#1b6ec2';
     ctx.fillRect(0, 0, W, 64);
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 36px system-ui, sans-serif';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(view.open ? `ORDER ${view.orderId}` : 'PACK STATION 1', 22, 33);
-    ctx.font = '26px system-ui, sans-serif';
+    ctx.font = `bold 36px ${F}`;
+    ctx.fillText(view.open ? `ORDER ${view.orderId}` : 'PACK STATION 1', 24, 33);
+    ctx.font = `26px ${F}`;
     ctx.textAlign = 'right';
-    ctx.fillText(view.open ? view.service : 'READY', W - 22, 33);
+    ctx.fillText(view.open ? view.service : 'READY', W - 24, 33);
     ctx.textAlign = 'left';
     if (!view.open) {
       ctx.fillStyle = '#ffd97a';
-      ctx.font = 'bold 44px system-ui, sans-serif';
-      ctx.fillText('SCAN TOTE TO OPEN ORDER', 40, H / 2 - 20);
+      ctx.font = `bold 50px ${F}`;
+      ctx.fillText('SCAN THE TOTE', 48, H / 2 - 30);
       ctx.fillStyle = '#9fb3c8';
-      ctx.font = '30px system-ui, sans-serif';
-      ctx.fillText(`Tote ${view.tote} is waiting on the left.`, 40, H / 2 + 40);
+      ctx.font = `30px ${F}`;
+      ctx.fillText(`Blue tote ${view.tote}, front of the bench.`, 48, H / 2 + 30);
       uploadCanvas(this.texture, this.canvas);
       return;
     }
-    let y = 100;
-    ctx.fillStyle = '#9fb3c8';
-    ctx.font = 'bold 24px system-ui, sans-serif';
-    ctx.fillText('ITEM', 22, y);
-    ctx.fillText('QTY', 520, y);
-    ctx.fillText('SCAN', 620, y);
-    ctx.fillText('PACKED', 760, y);
-    y += 44;
+    // Left: the order's items with scan / packed status.
+    const colW = W * 0.58;
+    let y = 104;
     for (const r of view.rows) {
       ctx.fillStyle = '#ffffff';
-      ctx.font = '30px system-ui, sans-serif';
-      ctx.fillText(r.name, 22, y);
-      if (r.fragile) {
-        const nameW = ctx.measureText(r.name).width;
-        ctx.fillStyle = '#ff8a80';
-        ctx.font = 'bold 20px system-ui, sans-serif';
-        ctx.fillText('FRAGILE', 22 + nameW + 14, y);
-      }
+      ctx.font = `bold 32px ${F}`;
+      ctx.fillText(r.name, 24, y);
+      const nw = ctx.measureText(r.name).width;
+      if (r.fragile) pill(24 + nw + 14, y - 16, 'FRAGILE', true, '#ff8a80');
       ctx.fillStyle = '#9fb3c8';
-      ctx.font = '22px ui-monospace, monospace';
-      ctx.fillText(`${r.sku}   ${r.dims}`, 22, y + 30);
-      ctx.font = 'bold 30px system-ui, sans-serif';
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText('1', 530, y);
-      ctx.fillStyle = r.scanned ? '#7ee2a8' : '#5f7187';
-      ctx.fillText(r.scanned ? 'OK' : '--', 620, y);
-      ctx.fillStyle = r.packed ? '#7ee2a8' : '#5f7187';
-      ctx.fillText(r.packed ? 'YES' : '--', 760, y);
-      y += 74;
+      ctx.font = `22px ${F}`;
+      ctx.fillText(r.dims, 24, y + 34);
+      let px = 24 + ctx.measureText(r.dims).width + 18;
+      px += pill(px, y + 18, r.scanned ? '✓ SCANNED' : 'SCAN', r.scanned) + 10;
+      pill(px, y + 18, r.packed ? '✓ PACKED' : 'PACK', r.packed);
+      y += 96;
     }
     for (const x of view.exceptions) {
-      ctx.fillStyle = x.state === 'diverted' ? '#7ee2a8' : '#ffb36b';
-      ctx.font = 'bold 26px system-ui, sans-serif';
-      ctx.fillText(`${x.sku} ${x.name}: NOT ON ORDER → ${x.state === 'diverted' ? 'IN EXCEPTION BIN' : 'EXCEPTION BIN'}`, 22, y);
-      y += 44;
+      ctx.fillStyle = x.state === 'diverted' ? '#7ee2a8' : '#ff9b6b';
+      ctx.font = `bold 24px ${F}`;
+      ctx.fillText(`✕ ${x.name}: NOT ON ORDER`, 24, y);
+      ctx.font = `22px ${F}`;
+      ctx.fillText(x.state === 'diverted' ? 'in the exception bin' : '→ yellow exception bin', 24, y + 30);
+      y += 70;
     }
+    // Right: carton card. Big and amber until the carton is built.
+    const cx = colW + 16;
+    const cw = W - cx - 24;
+    const cy = 86;
+    const ch = H - cy - 118;
+    const need = !view.carton;
+    ctx.fillStyle = need ? '#2b2410' : '#12283a';
+    ctx.fillRect(cx, cy, cw, ch);
+    ctx.strokeStyle = need ? '#ffc23d' : '#2f6db5';
+    ctx.lineWidth = need ? 8 : 3;
+    ctx.strokeRect(cx + 4, cy + 4, cw - 8, ch - 8);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = need ? '#ffc23d' : '#9fb3c8';
+    ctx.font = `bold 30px ${F}`;
+    ctx.fillText(need ? 'USE CARTON' : 'CARTON', cx + cw / 2, cy + 44);
+    ctx.fillStyle = need ? '#ffc23d' : '#ffffff';
+    ctx.font = `bold ${need ? 190 : 130}px ${F}`;
+    ctx.fillText(view.carton ?? view.recSize, cx + cw / 2, cy + ch / 2 + 8);
+    ctx.fillStyle = '#cfe0f2';
+    ctx.font = `24px ${F}`;
+    ctx.fillText(view.recInner, cx + cw / 2, cy + ch - 34);
+    ctx.textAlign = 'left';
+    // Bottom: weight and label status.
     ctx.fillStyle = '#25374d';
-    ctx.fillRect(0, H - 120, W, 120);
-    ctx.font = '26px system-ui, sans-serif';
-    ctx.fillStyle = '#cfe0f2';
-    ctx.fillStyle = view.carton ? '#cfe0f2' : '#ffd97a';
-    ctx.fillText(view.carton ? `CARTON: ${view.carton}` : `USE CARTON: ${view.recommended}`, 22, H - 88);
-    ctx.fillStyle = '#cfe0f2';
-    ctx.fillText(`WEIGHT: ${view.weight} kg  (expected ${view.range})`, 22, H - 50);
+    ctx.fillRect(0, H - 104, W, 104);
+    ctx.font = `bold 30px ${F}`;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`${view.weight} kg`, 24, H - 66);
+    ctx.font = `22px ${F}`;
+    ctx.fillStyle = '#9fb3c8';
+    ctx.fillText(`expected ${view.range} kg`, 24, H - 30);
     ctx.textAlign = 'right';
-    ctx.fillStyle = view.confirmed ? '#7ee2a8' : view.sealed ? '#ffd97a' : '#cfe0f2';
-    ctx.fillText(view.confirmed ? 'WEIGHT OK' : view.sealed ? 'CONFIRM WEIGHT' : 'OPEN', W - 22, H - 88);
-    ctx.fillStyle = view.label === 'APPLIED' ? '#7ee2a8' : '#cfe0f2';
-    ctx.fillText(`LABEL: ${view.label}`, W - 22, H - 50);
+    ctx.font = `bold 26px ${F}`;
+    ctx.fillStyle = view.confirmed ? '#7ee2a8' : view.sealed ? '#ffd97a' : '#9fb3c8';
+    ctx.fillText(view.confirmed ? '✓ WEIGHT OK' : view.sealed ? 'CONFIRM WEIGHT' : 'PACKING', W - 24, H - 66);
+    ctx.fillStyle = view.label === 'APPLIED' ? '#7ee2a8' : '#9fb3c8';
+    ctx.fillText(`LABEL ${view.label}`, W - 24, H - 30);
     ctx.textAlign = 'left';
     uploadCanvas(this.texture, this.canvas);
   }

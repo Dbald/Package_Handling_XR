@@ -12,6 +12,8 @@ import { brandTexture } from './textures.js';
 import { Panel, Tag } from './panel.js';
 import { buildMainSpec, buildHelpSpec, markerTarget } from './guidance.js';
 import { Sfx } from './audio.js';
+import { brief } from './copy.js';
+import { VideoPlayer, loadManifest } from './media.js';
 import { mergeStatic } from './merge.js';
 import { InstructionConsole, PerfMeter } from './console.js';
 import { startXRSession, describeXRError } from './xr-session.js';
@@ -40,7 +42,8 @@ export class App {
     this.engine = this.session.dock;
     this.sfx = new Sfx();
     const reduce = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    this.settings = { posture: 'standing', benchHeight: POSTURES.standing.bench, reducedMotion: reduce, muted: false };
+    this.settings = { posture: 'standing', benchHeight: POSTURES.standing.bench, reducedMotion: reduce, muted: false, ambience: true, music: false };
+    this.assistOpen = false;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 2));
@@ -61,6 +64,19 @@ export class App {
 
     this.mainPanel = new Panel({ width: 1.3, height: 0.86, name: 'main-panel' });
     this.console = new InstructionConsole(this.mainPanel);
+    this.video = new VideoPlayer(this, this.console);
+    // "PULL TRIGGER" sign over the Station 2 scan zone, lit while a label is lined up.
+    this.scanPrompt = new Tag({ width: 0.26, height: 0.058 });
+    this.scanPrompt.set('PULL TRIGGER', { accent: '#39d98a', bg: 'rgba(8,40,22,0.95)' });
+    this.scanPrompt.mesh.visible = false;
+    this.world.station.add(this.scanPrompt.mesh);
+    this.scanPrompt.mesh.position.set(LAYOUT.scanZone.x, LAYOUT.scanZone.y + LAYOUT.scanZone.h / 2 + 0.09, LAYOUT.scanZone.z);
+    loadManifest().then((m) => {
+      this.video.setFiles(m.videos);
+      this.sfx.setFiles(m.audio);
+      this.lastSpecKey = null;
+      this.refreshUI();
+    });
     if (new URLSearchParams(globalThis.location?.search ?? '').has('perf')) this.perf = new PerfMeter(this.console, Tag);
     this.helpPanel = new Panel({ width: 1.1, height: 1.02, name: 'help-panel' });
     this.helpPanel.mesh.visible = false;
@@ -172,6 +188,9 @@ export class App {
       xrActive: !!this.xr,
       held: holder ? active : null,
       heldBy: holder?.by ?? null,
+      assistOpen: this.assistOpen,
+      videos: this.video?.available,
+      video: this.video?.current ?? null,
       onFloor: Object.keys(this.phys).filter((k) => this.phys[k].zone === 'floor'),
       settings: this.settings,
       feedback: this.feedback,
@@ -191,10 +210,11 @@ export class App {
     const help = this.helpOpen ? buildHelpSpec(view) : null;
     const key = JSON.stringify([main, help]);
     // New task → pulse the console light and chime, so attention returns to it.
-    const step = main.objective ? `${main.kicker}|${main.title}` : null;
+    const step = main.stepId ?? null;
     if (step && step !== this.lastStep) {
       this.console.pulse(performance.now());
       if (this.lastStep) this.sfx.play('step');
+      this.sfx.play(`vo:${step}`); // optional recorded voice line for this step
     }
     this.lastStep = step;
     if (key !== this.lastSpecKey) {
@@ -215,7 +235,18 @@ export class App {
 
   showResult(r, { controller = null } = {}) {
     if (!r || r.silent || !r.message) return;
-    this.feedback = { tone: r.tone, text: r.message };
+    // Headset shows a headline + one line; the full message stays for desktop/screen readers.
+    const b = r.title ? { title: r.title, text: r.message } : brief(this.stationKey, r);
+    this.feedback = { tone: r.tone, title: b.title, text: b.text, full: r.message };
+    // A recorded coaching clip for this mistake plays once per session, if supplied.
+    if (r.code && ['error', 'critical', 'warning'].includes(r.tone)) this.video?.maybeCoach(`${this.stationKey}:${r.code}`);
+    // Event sounds (recorded files from media/manifest.json; most are silent until supplied).
+    const evSound = {
+      PRINTED: 'print', NO_READ: 'noread', CARTON_OK: 'fold', DUNNAGE: 'pillow', LABELLED: 'label',
+      RELEASED: 'conveyor', DIVERTED: 'bin', QUARANTINED: 'bin', SCANNED: 'scan', ITEM_OK: 'scan',
+      NOT_ON_ORDER: 'scan', ORDER_OPEN: 'scan', SEALED: 'tapeEnd',
+    }[r.code];
+    if (evSound) this.sfx.play(evSound);
     const sound = { success: 'success', error: 'error', critical: 'critical', warning: 'warning' }[r.tone];
     if (sound) this.sfx.play(sound);
     const pulses = { success: [0.3, 60], error: [0.6, 140], critical: [1.0, 300], warning: [0.5, 100] }[r.tone];
@@ -225,8 +256,9 @@ export class App {
     }
   }
 
-  info(message, tone = 'info') {
-    this.showResult({ tone, message });
+  /** App-level hint: short `title` + one short line. */
+  info(message, tone = 'info', title = null) {
+    this.showResult({ tone, message, title: title ?? undefined });
   }
 
   onEngineEvent(evt) {
@@ -236,6 +268,10 @@ export class App {
     }
     if (evt.type === 'phase' || evt.type === 'action') this.session.sync();
     if (evt.type === 'session-phase' && evt.phase === 'complete') this.resultsPage = 'summary';
+    if (evt.type === 'session-phase' && evt.phase === 'briefing' && this.video.has('intro') && !this.video.shown.has('intro')) {
+      this.video.play('intro'); // intro outlining the three goals, once per session
+    }
+    if (evt.type === 'phase' && evt.phase === 'complete') this.sfx.play('complete');
     this.refreshUI();
   }
 
@@ -263,6 +299,7 @@ export class App {
 
   /** Fade out, run `fn` (e.g. move to another station), fade back in. */
   fadeTransition(fn) {
+    this.sfx.play('transition');
     this.endIntro();
     this.transition = { t: 0, fn, fired: false };
     this.fade.material.opacity = 0;
@@ -312,6 +349,22 @@ export class App {
     this.session.replayPack();
     const o = this.pack.s.order;
     return { tone: 'info', message: `New order ${o.id} in tote ${o.tote}. Pick up the scanner and open it.` };
+  }
+
+  /** What the controller-attached hint should say for this hand, or null. */
+  controllerHint(c) {
+    const held = c.held;
+    const go = { accent: '#39d98a', bg: 'rgba(8,40,22,0.95)', pulse: true };
+    if (held === 'pk:scanner') return { text: 'TRIGGER = SCAN' };
+    if (held === 'pk:tape') return this.pack.tape.active === c ? { text: 'DRAG ALONG THE TOP' } : { text: 'HOLD TRIGGER + DRAG' };
+    if (held && this.world.packages[held] && this.stationKey === 'dock' && this.engine.packageState(held) === 'accepted') {
+      const a = this.scanAlignment(held);
+      if (a.aligned) return { text: 'PULL TRIGGER TO SCAN', ...go, tick: true };
+      if (a.inside) return { text: 'TURN LABEL TO SCANNER' };
+      return { text: 'LABEL INTO GREEN ZONE' };
+    }
+    if (!held && c.near && this.session.phase !== 'complete') return { text: 'GRIP = GRAB' };
+    return null;
   }
 
   /** Trigger released while holding something (continuous tools like the tape gun). */
@@ -368,7 +421,15 @@ export class App {
       case 'decide': r = e.decide(key, arg, ctx); break;
       case 'weight': r = e.confirmWeight(key, arg, ctx); break;
       case 'release': r = this.stationKey === 'pack' ? this.pack.confirmRelease(ctx) : this.confirmRelease(ctx); break;
-      case 'assist': r = this.assist(arg, key, ctx); break;
+      case 'assist':
+        if (arg === 'toggle') this.assistOpen = !this.assistOpen;
+        else r = this.assist(arg, key, ctx);
+        break;
+      case 'video':
+        if (arg === 'skip') this.video.stop();
+        else if (arg === 'replay') this.video.replay();
+        else this.video.play(arg);
+        break;
       case 'retrieve': this.retrieve(key); break;
       case 'place': r = this.assistPlace(key, arg, ctx); break;
       case 'scan': r = this.assistScan(key, ctx); break;
@@ -389,7 +450,15 @@ export class App {
         break;
       case 'toggle':
         if (arg === 'motion') this.settings.reducedMotion = !this.settings.reducedMotion;
-        if (arg === 'sound') this.sfx.muted = this.settings.muted = !this.settings.muted;
+        if (arg === 'sound') {
+          this.settings.muted = !this.settings.muted;
+          this.sfx.setMuted(this.settings.muted);
+          this.video.el.muted = this.settings.muted;
+        }
+        if (arg === 'ambience' || arg === 'music') {
+          this.settings[arg] = !this.settings[arg];
+          this.sfx.setLoops({ ambience: this.settings.ambience, music: this.settings.music });
+        }
         break;
       case 'results': this.resultsPage = arg; break;
       default: break;
@@ -504,7 +573,7 @@ export class App {
     if (!key) return;
     this.holders[key] = null;
     this.snapTo(key, 'bench');
-    this.info(`${SCENARIO.packages[key].label} is back on the inspection mat. No penalty.`);
+    this.info('No penalty.', 'info', 'Back on the mat');
   }
 
   // ------------------------------------------------------- hand interaction
@@ -518,14 +587,13 @@ export class App {
       this.attachToHand('practice', this.world.practice, controller, far);
       if (this.practiceHint === 0) {
         this.practiceHint = 1;
-        this.info('Grab works. Release GRIP to let go.', 'success');
+        this.info('Let go of GRIP to drop it.', 'success', 'Grab works!');
       }
       return true;
     }
     if (e.phase !== 'exercise') {
-      this.info(e.phase === 'complete'
-        ? 'The exercise is complete. Select Replay to start again.'
-        : 'Start the exercise first. During setup, practise with the grey box.');
+      if (e.phase === 'complete') this.info('Select Replay to go again.', 'info', 'All done');
+      else this.info('Press Start on the screen first.', 'info', 'Not started');
       this.xrInput.haptic(controller, 0.4, 80);
       this.refreshUI();
       return false;
@@ -547,6 +615,7 @@ export class App {
   }
 
   attachToHand(key, obj, controller, far) {
+    this.sfx.play('grab');
     this.cancelTweens(obj);
     controller.grip.attach(obj);
     controller.held = key;
@@ -572,7 +641,7 @@ export class App {
       this.restOrDrop('practice', obj, 0.14);
       if (this.practiceHint === 1) {
         this.practiceHint = 2;
-        this.info('Released. Now point at a button and pull TRIGGER to press it.', 'success');
+        this.info('Point at a button, pull TRIGGER.', 'success', 'Nice!');
         this.refreshUI();
       }
       return;
@@ -580,6 +649,7 @@ export class App {
     const p = this.world.packages[key];
     this.holders[key] = null;
     this.station.attach(p.group);
+    this.sfx.play('drop');
     const center = p.group.position;
     const zone = this.zoneAt(center);
     if (zone) {
@@ -613,9 +683,8 @@ export class App {
       this.phys[key].zone = 'frozen';
     }
     if (reason === 'move') return;
-    this.info(reason === 'tracking'
-      ? 'Controller tracking lost — the item is held in place. Grab it again when your controller is visible.'
-      : 'Controller disconnected — the item is held in place. Nothing was dropped or scored.', 'warning');
+    if (reason === 'tracking') this.info('It\u2019s held in place. Grab it again.', 'warning', 'Tracking lost');
+    else this.info('Item held in place. Nothing scored.', 'warning', 'Controller lost');
     this.refreshUI();
   }
 
@@ -669,10 +738,10 @@ export class App {
         this.world.practice.position.copy(this.practiceHome());
         this.world.practice.quaternion.identity();
       }, 1200);
-      this.info('The practice box fell and is being returned. Dropping things is never penalised.');
+      this.info('No penalty. It\u2019s coming back.', 'info', 'Dropped');
     } else {
       this.phys[key].zone = 'floor';
-      this.info(`${SCENARIO.packages[key].label} was dropped — no penalty. Select Retrieve package to bring it back.`);
+      this.info('No penalty. Select Retrieve package.', 'info', 'Dropped');
     }
     this.refreshUI();
   }
@@ -750,13 +819,13 @@ export class App {
 
   tryResume() {
     if (this.needsTrackingForResume()) {
-      this.info('Waiting for controller tracking. Resume becomes available when a controller is tracked.', 'warning');
+      this.info('Pick up a controller to resume.', 'warning', 'Waiting');
       return;
     }
     if (this.helpOpen) this.toggleHelp(false);
     const wasPaused = this.session.isPaused();
     this.session.resume();
-    if (wasPaused) this.info('Resumed. Scoring and the timer are running again.');
+    if (wasPaused) this.info('Scoring is running again.', 'info', 'Resumed');
   }
 
   // --------------------------------------------------------------- comfort
@@ -824,6 +893,8 @@ export class App {
     for (const c of this.xrInput.controllers) c.held = null;
     this.helpOpen = false;
     this.helpPanel.mesh.visible = false;
+    if (this.video.current) this.video.stop();
+    this.video.shown.clear();
     this.session.reset();
     this.resetScene();
     this.packOrder = 0;
@@ -1075,6 +1146,8 @@ export class App {
       }
     }
     const glow = aligned || (flash && flash.ok);
+    this.scanPrompt.mesh.visible = aligned;
+    if (aligned) this.scanPrompt.mesh.lookAt(this.viewerPose().pos);
     scanZone.fill.material.opacity = glow ? 0.25 : 0.08;
     scanZone.edges.material.color.setHex(glow ? 0xb6ffd6 : 0x39d98a);
     if (!slow) return;

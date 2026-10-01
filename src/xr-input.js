@@ -2,6 +2,7 @@
 // thumbstick rotates a held package, B/Y opens help. Either hand can do
 // everything (PRD §7). Hand tracking is not assumed.
 import * as THREE from 'three';
+import { Tag } from './panel.js';
 
 const tmp = new THREE.Vector3();
 const box = new THREE.Box3();
@@ -44,10 +45,12 @@ export class XRInput {
       const cursor = new THREE.Mesh(new THREE.SphereGeometry(0.008, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
       cursor.visible = false;
       ray.add(line);
-      scene.add(ray, grip, cursor);
+      // Context hint that floats just above the controller ("PULL TRIGGER TO SCAN").
+      const hint = new Tag({ width: 0.22, height: 0.048 });
+      scene.add(ray, grip, cursor, hint.mesh);
       const c = {
         index: i, ray, grip, line, cursor, source: null, connected: false, handedness: null,
-        held: null, lostFrames: 0, prev: [], hover: null, near: null, visual: null,
+        held: null, lostFrames: 0, prev: [], hover: null, near: null, visual: null, hint, hintKey: null,
       };
       ray.addEventListener('connected', (e) => this.onConnected(c, e.data));
       ray.addEventListener('disconnected', () => this.onDisconnected(c));
@@ -83,7 +86,7 @@ export class XRInput {
     const { app } = this;
     const reasons = app.session.pauseReasons;
     if (reasons.has('input') || reasons.has('xr-visibility')) {
-      app.info('Controller tracking is back. Select Resume when you are ready.');
+      app.info('Select Resume when ready.', 'info', 'Controller back');
     }
     app.refreshUI();
   }
@@ -211,6 +214,7 @@ export class XRInput {
         if (z) hovers.push({ kind: 'zone', key: c.held, zoneLabel: `Release: ${app.world.zones[z].label}`, object: g });
       }
       this.pollGamepad(c, dt);
+      this.updateHint(c);
     }
     // Drop targets highlight while a package is held; the hovered one brightens.
     const anyHeld = this.controllers.some((c) => c.held && c.held !== 'practice' && !c.held.startsWith('pk:'));
@@ -223,6 +227,23 @@ export class XRInput {
     // A held package's zone label takes precedence over other hovers.
     const zoneHover = hovers.find((h) => h && h.kind === 'zone');
     app.applyHover(zoneHover ? [zoneHover, ...hovers.filter((h) => h !== zoneHover)] : hovers);
+  }
+
+  /** Show the controller-attached hint for what this hand can do right now. */
+  updateHint(c) {
+    const h = c.connected && c.grip.visible ? this.app.controllerHint(c) : null;
+    const key = h ? h.text : null;
+    if (key !== c.hintKey) {
+      if (h?.tick) this.haptic(c, 0.5, 40); // label just lined up: you can scan now
+      c.hintKey = key;
+      c.hint.set(key, { accent: h?.accent ?? '#e0a526', bg: h?.bg ?? 'rgba(12,16,21,0.92)' });
+    }
+    if (!h) return;
+    c.grip.getWorldPosition(tmp);
+    c.hint.mesh.position.set(tmp.x, tmp.y + 0.1, tmp.z);
+    c.hint.mesh.lookAt(this.app.viewerPose().pos);
+    const s = h.pulse ? 1 + 0.08 * Math.sin(performance.now() / 120) : 1;
+    c.hint.mesh.scale.setScalar(s);
   }
 
   pollGamepad(c, dt) {

@@ -83,10 +83,25 @@ export class HtmlUI {
   }
 
   renderSpec(prefix, spec) {
-    $(`${prefix}kicker`).textContent = spec.kicker ?? '';
-    $(`${prefix}title`).textContent = spec.title ?? '';
+    $(`${prefix}kicker`).textContent = [spec.chip ?? spec.kicker, spec.stepLabel].filter(Boolean).join(' · ');
+    $(`${prefix}title`).textContent = spec.video ? 'Video' : spec.title ?? '';
     const body = $(`${prefix}body`);
     body.replaceChildren();
+    if (spec.subtitle) body.append(el('p', { class: 'lead' }, spec.subtitle));
+    if (spec.hints?.length) {
+      const hints = el('p', { class: 'hints' });
+      for (const h of spec.hints) hints.append(el('kbd', {}, h.key), document.createTextNode(` ${h.text}  `));
+      body.append(hints);
+    }
+    if (spec.cards?.length) {
+      const ol = el('ol', { class: 'cards' });
+      for (const c of spec.cards) {
+        const li = el('li');
+        li.append(el('strong', {}, c.title), el('span', {}, c.text));
+        ol.append(li);
+      }
+      body.append(ol);
+    }
     let list = null;
     for (const item of spec.body ?? []) {
       if (typeof item === 'object' && item.gap) continue;
@@ -130,15 +145,20 @@ export class HtmlUI {
     this.renderSpec('', main);
 
     const fb = $('feedback');
-    if (main.feedback?.text) {
+    if (main.feedback?.text || main.feedback?.title) {
       const tone = TONES[main.feedback.tone] ?? TONES.info;
       fb.hidden = false;
       fb.dataset.tone = main.feedback.tone;
       fb.setAttribute('aria-live', main.feedback.tone === 'critical' ? 'assertive' : 'polite');
       fb.replaceChildren(
-        el('strong', { class: 'tone-label' }, tone.label ? `${tone.label}: ` : ''),
-        document.createTextNode(main.feedback.text),
+        el('strong', { class: 'tone-label' }, `${main.feedback.title || tone.label}`),
+        document.createTextNode(` ${main.feedback.text ?? ''}`),
       );
+      if (main.feedback.full && main.feedback.full !== main.feedback.text) {
+        const more = el('details');
+        more.append(el('summary', {}, 'More'), el('p', {}, main.feedback.full));
+        fb.append(more);
+      }
     } else {
       fb.hidden = true;
       fb.textContent = '';
