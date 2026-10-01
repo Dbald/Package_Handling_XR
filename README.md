@@ -19,7 +19,8 @@ npm run test:e2e   # desktop flow + simulated-controller VR logic (Playwright/Ch
 WebXR needs **HTTPS**. `localhost` works for desktop, but the headset needs a real HTTPS URL. To get one:
 
 - **GitHub Pages (prepared, not enabled):** `.github/workflows/deploy-pages.yml` runs only when started by hand. In the repo, go to Settings → Pages → Source: *GitHub Actions*, then run the workflow from the Actions tab. The URL will be `https://<owner>.github.io/Package_Handling_XR/`.
-- Any static HTTPS host (Netlify, Cloudflare Pages, S3+CloudFront) also works. Serve the repo root.
+- **Netlify (configured):** `netlify.toml` publishes the repo root with no build (it runs `npm test` as a gate). Connect the repo under *Add new site → Import an existing project*, or drag the folder into app.netlify.com/drop.
+- Any other static HTTPS host (Cloudflare Pages, S3+CloudFront) also works. Serve the repo root.
 
 Hosting is not switched on automatically, because the PRD says deployment needs a separate decision.
 
