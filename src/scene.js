@@ -4,9 +4,10 @@
 // whole station group; legs extend below the floor so they never float.
 import * as THREE from 'three';
 import {
-  packageFaceTextures, textTexture, concreteTexture, beltTexture, matTexture, brandTexture,
+  packageFaceTextures, textTexture, beltTexture, matTexture, brandTexture,
 } from './textures.js';
-import { Tag } from './panel.js';
+import { Tag, uploadCanvas } from './panel.js';
+import { buildHall } from './dressing.js';
 
 export const LAYOUT = Object.freeze({
   bench: { x0: -0.8, x1: 0.35, z0: -1.0, z1: -0.28 },
@@ -102,36 +103,20 @@ export function buildWorld(scenario) {
   worldRoot.name = 'worldRoot';
 
   // ---------------------------------------------------------------- room
-  const floorTex = concreteTexture();
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(14, 14), new THREE.MeshLambertMaterial({ map: floorTex }));
-  floor.rotation.x = -Math.PI / 2;
-  worldRoot.add(floor);
-
-  const wallMat = lambert(0x8d949c);
-  // One hall holds both stations: Station 1 (pack) at x = -3.2, Station 2 at 0.
-  const back = box(11.6, 3.4, 0.1, wallMat, -1.0, 1.7, -3.25);
-  const left = box(0.1, 3.4, 7, wallMat, -6.8, 1.7, -0.3);
-  const right = box(0.1, 3.4, 7, wallMat, 4.8, 1.7, -0.3);
-  const behind = box(11.6, 3.4, 0.1, wallMat, -1.0, 1.7, 3.2);
-  const ceiling = box(11.6, 0.05, 7, lambert(0x4a5057), -1.0, 3.4, -0.3);
-  worldRoot.add(back, left, right, behind, ceiling);
-  for (const [x, z] of [[-4.4, -1.5], [-2.0, -1.5], [-1.2, -1.5], [1.2, -1.5], [-4.4, 1.2], [-2.0, 1.2], [-1.2, 1.2], [1.2, 1.2]]) {
-    const light = box(1.2, 0.02, 0.3, new THREE.MeshBasicMaterial({ color: 0xf4f6f8 }), x, 3.37, z);
-    worldRoot.add(light);
-  }
+  buildHall(worldRoot); // textured shell, structure, racking, baked shadows
   const brand = labelPlane(brandTexture(scenario.org, scenario.title), 2.0, 0.5);
-  brand.position.set(-1.6, 2.35, -3.19);
+  brand.position.set(-1.6, 2.2, -3.17);
   worldRoot.add(brand);
 
   // Outbound dock opening where the conveyor ends.
-  const dock = box(0.9, 1.0, 0.02, new THREE.MeshBasicMaterial({ color: 0x0b0d10 }), LAYOUT.conveyor.x, 0.95, -3.19);
+  const dock = box(0.9, 1.0, 0.02, new THREE.MeshBasicMaterial({ color: 0x0b0d10 }), LAYOUT.conveyor.x, 0.95, -3.17);
   const dockSign = labelPlane(textTexture('OUTBOUND DOCK 3', { w: 512, h: 96, font: 'bold 50px system-ui', bg: '#1d6b3a' }), 0.8, 0.15);
-  dockSign.position.set(LAYOUT.conveyor.x, 1.6, -3.18);
+  dockSign.position.set(LAYOUT.conveyor.x, 1.6, -3.16);
   worldRoot.add(dock, dockSign);
   // Opening where Station 1's conveyor carries packed orders toward the dock.
-  const packDock = box(0.7, 0.8, 0.02, new THREE.MeshBasicMaterial({ color: 0x0b0e12 }), -2.6, 0.85, -3.19);
+  const packDock = box(0.7, 0.8, 0.02, new THREE.MeshBasicMaterial({ color: 0x0b0e12 }), -2.6, 0.85, -3.17);
   const packDockSign = labelPlane(textTexture('TO DOCK CHECK', { w: 512, h: 96, font: 'bold 48px system-ui', bg: '#1f2a36' }), 0.7, 0.13);
-  packDockSign.position.set(-2.6, 1.42, -3.18);
+  packDockSign.position.set(-2.6, 1.42, -3.16);
   worldRoot.add(packDock, packDockSign);
 
   // Standing mat and floor safety lines (stationary: all tasks fit here).
@@ -401,6 +386,6 @@ export class ScreenDisplay {
       ctx.fillText(l.text, canvas.width / 2, y);
       y += size * 0.6;
     }
-    this.texture.needsUpdate = true;
+    uploadCanvas(this.texture, this.canvas);
   }
 }

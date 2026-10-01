@@ -52,6 +52,7 @@ export class XRInput {
       ray.addEventListener('connected', (e) => this.onConnected(c, e.data));
       ray.addEventListener('disconnected', () => this.onDisconnected(c));
       ray.addEventListener('selectstart', () => this.onSelect(c));
+      ray.addEventListener('selectend', () => this.app.onHeldTriggerEnd(c));
       ray.addEventListener('squeezestart', () => this.onSqueeze(c));
       ray.addEventListener('squeezeend', () => this.onSqueezeEnd(c));
       this.controllers.push(c);

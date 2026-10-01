@@ -26,6 +26,13 @@ export class PackEngine extends BaseEngine {
     this.released = false;
   }
 
+  /** Switch to another order (Station 1 replay with a new configuration). */
+  setScenario(scenario) {
+    this.scenario = scenario;
+    this.maxScore = scenario.checkpoints.reduce((a, c) => a + c.points, 0);
+    this.reset();
+  }
+
   _startMessage() {
     return 'Pick up the scanner and scan the tote label to open the order.';
   }
@@ -242,6 +249,20 @@ export class PackEngine extends BaseEngine {
     return this._finish('DUNNAGE', 'dunnage', r, { valid: true, ctx });
   }
 
+  /**
+   * Why sealing would be refused right now, without recording anything:
+   * 'MISSING_ITEMS' | 'TOTE_NOT_CLEAR' | 'NEEDS_DUNNAGE' | null. Lets the tape
+   * gun refuse up front instead of letting the learner run tape for nothing.
+   */
+  sealBlocker() {
+    const s = this.scenario;
+    if (this.orderItems().some((k) => this.items[k].loc !== 'box')) return 'MISSING_ITEMS';
+    if (s.itemOrder.some((k) => !this.item(k).onOrder && this.items[k].loc !== 'exception')) return 'TOTE_NOT_CLEAR';
+    const fragile = s.itemOrder.some((k) => this.item(k).fragile && this.items[k].loc === 'box');
+    if (fragile && this.dunnage === 0) return 'NEEDS_DUNNAGE';
+    return null;
+  }
+
   seal(ctx) {
     const s = this.scenario;
     const oid = s.order.id;
@@ -266,8 +287,9 @@ export class PackEngine extends BaseEngine {
     const fragile = s.itemOrder.some((k) => this.item(k).fragile && this.items[k].loc === 'box');
     if (fragile && this.dunnage === 0) {
       const first = this._evaluate('PK_DUNNAGE', false, 'The fragile item was about to be sealed without void fill.');
+      const names = s.itemOrder.filter((k) => this.item(k).fragile && this.items[k].loc === 'box').map((k) => this.item(k).name.toLowerCase());
       const r = this._result(false, 'NEEDS_DUNNAGE', 'error',
-        'Add void fill first: the mug is fragile and will break if it can move in the carton. Take air pillows from the basket.');
+        `Add void fill first: the ${names.join(' and ')} ${names.length > 1 ? 'are' : 'is'} fragile and will break if it can move in the carton. Take air pillows from the basket.`);
       return this._finish(oid, 'seal', r, { checkpointId: 'PK_DUNNAGE', valid: false, first, ctx });
     }
     this.sealed = true;

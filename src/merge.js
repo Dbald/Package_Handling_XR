@@ -9,22 +9,44 @@ const n = new THREE.Vector3();
 const nm = new THREE.Matrix3();
 
 function mergeable(o) {
-  return o.isMesh && !o.isInstancedMesh && !o.userData.kind && o.children.length === 0
-    && !Array.isArray(o.material) && o.material.isMeshLambertMaterial
-    && !o.material.map && !o.material.transparent && o.visible;
+  const m = o.material;
+  return o.isMesh && !o.isInstancedMesh && !o.userData.kind && !o.userData.noMerge && o.children.length === 0
+    && !Array.isArray(m) && (m.isMeshLambertMaterial || m.isMeshBasicMaterial) && o.visible
+    // Textured or transparent meshes merge only when they share one material instance.
+    && (!(m.map || m.transparent) || o.userData.sharedMaterial);
+}
+
+// Plain colour-only materials are merged ACROSS colours: each part's colour is
+// baked into a vertex-colour attribute, so a whole parent's static scenery
+// becomes one draw call regardless of how many paints it uses.
+function bucketKey(m) {
+  if (m.map || m.transparent) return `uuid:${m.uuid}`;
+  if (m.emissive && m.emissive.getHex() !== 0) return `${m.type}|${m.color.getHex()}|${m.emissive.getHex()}|${m.side}`;
+  return `vc|${m.type}|${m.side}`;
+}
+
+const vcMaterials = new Map();
+function vertexColorMaterial(proto) {
+  const key = `${proto.type}|${proto.side}`;
+  if (!vcMaterials.has(key)) {
+    const M = proto.isMeshBasicMaterial ? THREE.MeshBasicMaterial : THREE.MeshLambertMaterial;
+    vcMaterials.set(key, new M({ vertexColors: true, side: proto.side, toneMapped: proto.toneMapped }));
+  }
+  return vcMaterials.get(key);
 }
 
 function mergeChildren(parent) {
   const buckets = new Map();
   for (const m of parent.children) {
     if (!mergeable(m)) continue;
-    const key = `${m.material.color.getHex()}|${m.material.emissive.getHex()}|${m.material.side}`;
+    const key = bucketKey(m.material);
     if (!buckets.has(key)) buckets.set(key, []);
     buckets.get(key).push(m);
   }
   let removed = 0;
-  for (const list of buckets.values()) {
+  for (const [key, list] of buckets.entries()) {
     if (list.length < 2) continue;
+    const vc = key.startsWith('vc|');
     let vCount = 0;
     let iCount = 0;
     for (const m of list) {
@@ -34,6 +56,9 @@ function mergeChildren(parent) {
     }
     const pos = new Float32Array(vCount * 3);
     const nor = new Float32Array(vCount * 3);
+    const withUv = list.every((m) => m.geometry.attributes.uv);
+    const uvs = withUv && !vc ? new Float32Array(vCount * 2) : null;
+    const cols = vc ? new Float32Array(vCount * 3) : null;
     const idx = new Uint32Array(iCount);
     let vo = 0;
     let io = 0;
@@ -48,6 +73,17 @@ function mergeChildren(parent) {
         pos.set([v.x, v.y, v.z], (vo + i) * 3);
         n.fromBufferAttribute(nr, i).applyMatrix3(nm).normalize();
         nor.set([n.x, n.y, n.z], (vo + i) * 3);
+        if (cols) {
+          const c = m.material.color; // linear, as vertex colours expect
+          cols[(vo + i) * 3] = c.r;
+          cols[(vo + i) * 3 + 1] = c.g;
+          cols[(vo + i) * 3 + 2] = c.b;
+        }
+        if (uvs) {
+          const uv = g.attributes.uv;
+          uvs[(vo + i) * 2] = uv.getX(i);
+          uvs[(vo + i) * 2 + 1] = uv.getY(i);
+        }
       }
       if (g.index) {
         for (let j = 0; j < g.index.count; j++) idx[io + j] = g.index.getX(j) + vo;
@@ -61,9 +97,11 @@ function mergeChildren(parent) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    if (uvs) geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    if (cols) geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.computeBoundingSphere();
-    const merged = new THREE.Mesh(geo, list[0].material);
+    const merged = new THREE.Mesh(geo, vc ? vertexColorMaterial(list[0].material) : list[0].material);
     merged.name = 'merged-static';
     for (const m of list) {
       parent.remove(m);

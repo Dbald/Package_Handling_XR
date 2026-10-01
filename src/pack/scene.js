@@ -6,6 +6,8 @@
 import * as THREE from 'three';
 import { paintCardboard, drawBarcode, textTexture, canvasTexture } from '../textures.js';
 import { ScreenDisplay, LAYOUT } from '../scene.js';
+import { uploadCanvas } from '../panel.js';
+import { PACK_CATALOG } from './scenario.js';
 
 export const PACK_LAYOUT = Object.freeze({
   bench: LAYOUT.bench,
@@ -16,11 +18,12 @@ export const PACK_LAYOUT = Object.freeze({
   basket: { x: 0.28, z: -0.87, w: 0.14, d: 0.2, h: 0.1 },
   printer: { x: 0.28, z: -0.65, w: 0.13, d: 0.16, h: 0.12 },
   tape: { x: 0.28, z: -0.45 },
-  scanner: { x: -0.48, z: -0.315 },
-  monitor: { x: 0.6, y: 0.44, z: -0.9, w: 0.46, h: 0.29 },
+  scanner: { x: -0.335, z: -0.31 },
+  // Order monitor on its own floor pole to the learner's left, beside the tote.
+  monitor: { x: -0.98, y: 0.5, z: -0.78, w: 0.56, h: 0.35 },
   conveyor: LAYOUT.conveyor,
   releaseButton: LAYOUT.releaseButton,
-  panel: { x: -0.25, z: -1.35, standingY: 0.8, seatedY: 0.72 },
+  panel: { x: -0.2, z: -1.35, standingY: 0.8, seatedY: 0.72 },
 });
 
 const lambert = (color, extra = {}) => new THREE.MeshLambertMaterial({ color, ...extra });
@@ -43,7 +46,7 @@ function tag(obj, key, label) {
 
 // ------------------------------------------------------------- textures
 
-function productFaces(def, { base, accent, art, barcodeFace }) {
+function productFaces(def, { base, accent, art, barcodeFace = def.barcodeFace }) {
   // BoxGeometry face order: +x, -x, +y, -y, +z, -z
   const faces = ['px', 'nx', 'py', 'ny', 'pz', 'nz'];
   return faces.map((f) => canvasTexture(256, 256, (ctx, w, h) => {
@@ -95,6 +98,31 @@ function caseArt(ctx, w, h, f) {
   ctx.fillText('PHONE CASE', 30, 130);
 }
 
+function genericArt(title, sub, color, fragile) {
+  return (ctx, w, h, f) => {
+    if (f === 'ny') return;
+    ctx.fillStyle = color;
+    ctx.font = 'bold 30px system-ui, sans-serif';
+    ctx.fillText(title, 18, 120);
+    ctx.font = '22px system-ui, sans-serif';
+    ctx.fillText(sub, 18, 156);
+    if (fragile) {
+      ctx.fillStyle = '#c62828';
+      ctx.font = 'bold 34px system-ui, sans-serif';
+      ctx.fillText('FRAGILE', 18, 236);
+    }
+  };
+}
+
+export const ITEM_STYLES = {
+  mug: { base: '#f4f4f0', accent: '#2b4a6b', art: mugArt },
+  book: { base: '#1f3557', accent: '#c9a227', art: bookArt },
+  case: { base: '#5b2d8e', accent: '#ff7ab6', art: caseArt },
+  charger: { base: '#f2f4f5', accent: '#2e9e5b', art: genericArt('CHARGER', '30 W USB-C', '#1d3b2a') },
+  cable: { base: '#2a6fb5', accent: '#9fd0ff', art: genericArt('USB-C CABLE', '1 m braided', '#ffffff') },
+  lamp: { base: '#e9e2d4', accent: '#3a3a3a', art: genericArt('DESK LAMP', 'LED · glass shade', '#2b2b2b', true) },
+};
+
 function makeItem(def, opts) {
   const [w, h, d] = def.size;
   const mats = productFaces(def, opts).map((map) => new THREE.MeshLambertMaterial({ map, emissive: 0x000000 }));
@@ -103,7 +131,7 @@ function makeItem(def, opts) {
   g.add(mesh);
   // Barcode normal in item-local space (for scan facing checks).
   const normals = { pz: [0, 0, 1], py: [0, 1, 0] };
-  g.userData.barcodeNormal = new THREE.Vector3(...normals[opts.barcodeFace]);
+  g.userData.barcodeNormal = new THREE.Vector3(...normals[opts.barcodeFace ?? def.barcodeFace]);
   tag(g, `pk:${def.key}`, `${def.name} — ${def.sku}`);
   return { group: g, mesh, mats };
 }
@@ -145,23 +173,40 @@ function makeCarton(size) {
   mk(w, d / 2, 0, d / 2, 'x', -1); // front long flap folds toward -z
   mk(d, 0.07, -w / 2, 0, 'z', 1); // side flaps
   mk(d, 0.07, w / 2, 0, 'z', -1);
-  const tape = box(0.05, 0.002, d + 0.02, new THREE.MeshLambertMaterial({ color: 0xc9a46a, transparent: true, opacity: 0.85 }), 0, h + t + 0.001, 0);
+  // Tape runs along the seam where the long flaps meet (the x axis) and wraps
+  // down both ends. `setTape(a, b)` shows the strip between x = a and x = b.
+  const tapeMat = new THREE.MeshLambertMaterial({ color: 0xc9a46a, transparent: true, opacity: 0.9 });
+  const tape = new THREE.Mesh(new THREE.BoxGeometry(1, 0.002, 0.05), tapeMat);
+  tape.position.y = h + t + 0.001;
   tape.visible = false;
+  const tabs = [-1, 1].map((sx) => {
+    const tab = box(0.002, 0.05, 0.05, tapeMat, sx * (w / 2 + 0.002), h - 0.02, 0);
+    tab.visible = false;
+    g.add(tab);
+    return tab;
+  });
   g.add(tape);
-  const setSealed = (sealed) => {
+  const setTape = (a, b) => {
+    const len = Math.max(0, b - a);
+    tape.visible = len > 0.004;
+    tape.scale.x = Math.max(len, 0.001);
+    tape.position.x = (a + b) / 2;
+    tabs[0].visible = a <= -w / 2 + 0.01;
+    tabs[1].visible = b >= w / 2 - 0.01;
+  };
+  // k = 0 open (flaps splayed outward), 1 closed (side flaps under long flaps).
+  const setFlaps = (k) => {
     for (const p of flaps) {
       const { axis, sign } = p.userData;
-      // Open: flaps splay outward. Sealed: folded flat (side flaps under long flaps).
-      const angle = sealed ? 0 : -sign * 1.9;
+      const angle = (1 - k) * -sign * 1.9;
       if (axis === 'x') p.rotation.set(angle, 0, 0);
       else p.rotation.set(0, 0, -angle);
-      if (sealed && axis === 'z') p.position.y = h - 0.004;
-      else p.position.y = h;
+      p.position.y = axis === 'z' ? h - 0.004 * k : h;
     }
-    tape.visible = sealed;
   };
-  setSealed(false);
-  return { group: g, mat, setSealed, size };
+  setFlaps(0);
+  setTape(0, 0);
+  return { group: g, mat, setFlaps, setTape, size };
 }
 
 function makeFlatCarton(key, size) {
@@ -188,8 +233,9 @@ function makeFlatCarton(key, size) {
 
 function makeScannerGun() {
   const g = new THREE.Group();
-  const body = lambert(0x2a2f36, { emissive: 0x000000 });
-  const accent = lambert(0xe0a526, { emissive: 0x000000 });
+  const body = lambert(0xf2c230, { emissive: 0x000000 });
+  const accent = lambert(0x24292f, { emissive: 0x000000 });
+  // Bright industrial yellow so it reads as a tool at a glance.
   // Scan direction is local -Z; the handle hangs below the hand.
   g.add(box(0.05, 0.045, 0.12, body, 0, 0, -0.03));
   const handle = box(0.032, 0.1, 0.038, body, 0, -0.06, 0.02);
@@ -267,18 +313,27 @@ export function buildPackStation(scenario) {
   tote.add(box(T.w, T.h, 0.015, toteMat, 0, T.h / 2, T.d / 2));
   tote.add(box(0.015, T.h, T.d, toteMat, -T.w / 2, T.h / 2, 0));
   tote.add(box(0.015, T.h, T.d, toteMat, T.w / 2, T.h / 2, 0));
-  const toteLabelTex = canvasTexture(256, 128, (ctx, w, h) => {
+  // Redrawn per order (drawToteLabel).
+  const toteCanvas = document.createElement('canvas');
+  toteCanvas.width = 256;
+  toteCanvas.height = 128;
+  const toteLabelTex = new THREE.CanvasTexture(toteCanvas);
+  toteLabelTex.colorSpace = THREE.SRGBColorSpace;
+  const drawToteLabel = (id) => {
+    const ctx = toteCanvas.getContext('2d');
     ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, w, h);
-    drawBarcode(ctx, 14, 12, w - 28, 70, scenario.order.tote);
+    ctx.fillRect(0, 0, 256, 128);
+    drawBarcode(ctx, 14, 12, 228, 70, id);
     ctx.fillStyle = '#111';
     ctx.font = 'bold 30px ui-monospace, monospace';
-    ctx.fillText(scenario.order.tote, 20, 116);
-  });
+    ctx.fillText(id, 20, 116);
+    uploadCanvas(toteLabelTex, toteCanvas);
+  };
+  drawToteLabel(scenario.order.tote);
   const toteLabel = plane(toteLabelTex, 0.12, 0.06);
   toteLabel.position.set(0, T.h * 0.55, T.d / 2 + 0.009);
   tote.add(toteLabel);
-  tag(toteLabel, 'pk:tote', `Order tote ${scenario.order.tote} — scan this label`);
+  tag(toteLabel, 'pk:tote', 'Order tote — scan this label');
   station.add(tote);
 
   // Exception bin.
@@ -327,41 +382,38 @@ export function buildPackStation(scenario) {
   station.add(box(0.28, 0.045, 0.06, lambert(0x2d3339), P.x, 0.022, P.z + P.d / 2 + 0.035));
   station.add(scaleScreen.mesh);
 
-  // Erected carton (correct size); hidden until built.
-  const carton = makeCarton(scenario.cartons[scenario.correctCarton].size);
-  tag(carton.group, 'pk:box', `Order carton ${scenario.order.id}`);
-  carton.group.visible = false;
-  station.add(carton.group);
+  // Erected cartons, one per size; the built one is shown. Each has its own
+  // void-fill pillows (kept inside the walls) and an applied-label slot.
   const pillowMat = new THREE.MeshLambertMaterial({ color: 0xeef6ff, transparent: true, opacity: 0.85, emissive: 0x000000 });
-  const cartonPillows = [];
-  const [cw, , cd] = carton.size;
-  const pillowSlots = [[0.02, 0.07, -0.08], [0.02, 0.07, 0.08], [-0.12, 0.13, -0.08], [-0.12, 0.13, 0.08], [0.02, 0.15, 0], [-0.13, 0.04, 0]];
-  for (const [x, y, z] of pillowSlots) {
-    const p = makePillow(pillowMat);
-    p.position.set(x * (cw / 0.32), y, z * (cd / 0.24));
-    p.visible = false;
-    carton.group.add(p);
-    cartonPillows.push(p);
+  const shipLabel = new ShipLabel();
+  shipLabel.draw(scenario);
+  const cartons = {};
+  for (const key of scenario.cartonOrder) {
+    const c = makeCarton(scenario.cartons[key].size);
+    tag(c.group, 'pk:box', 'Order carton');
+    c.group.visible = false;
+    station.add(c.group);
+    const [cw, ch, cd] = c.size;
+    const k = Math.min(1, cw / 0.32, cd / 0.24);
+    c.pillows = [];
+    for (const [fx, fy, fz] of [[-0.3, 0.72, 0.25], [0.3, 0.72, -0.25], [-0.3, 0.72, -0.25], [0.3, 0.72, 0.25], [0, 0.78, 0], [0, 0.55, 0.3]]) {
+      const p = makePillow(pillowMat);
+      p.scale.multiplyScalar(k);
+      // Clamp inside the walls so nothing pokes through a closed carton.
+      const hx = cw / 2 - 0.012 - 0.055 * k;
+      const hz = cd / 2 - 0.012 - 0.0375 * k;
+      p.position.set(THREE.MathUtils.clamp(fx * cw, -hx, hx), Math.min(fy * ch, ch - 0.01 - 0.0225 * k), THREE.MathUtils.clamp(fz * cd, -hz, hz));
+      p.visible = false;
+      c.group.add(p);
+      c.pillows.push(p);
+    }
+    c.appliedLabel = plane(shipLabel.texture, 0.1, 0.15);
+    c.appliedLabel.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
+    c.appliedLabel.position.set(0, ch + 0.012, cd / 2 - 0.085);
+    c.appliedLabel.visible = false;
+    c.group.add(c.appliedLabel);
+    cartons[key] = c;
   }
-  const shipLabelTex = canvasTexture(256, 384, (ctx, w, h) => {
-    ctx.fillStyle = '#fbfbf7';
-    ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = '#111';
-    ctx.font = 'bold 30px system-ui, sans-serif';
-    ctx.fillText('GROUND', 16, 40);
-    ctx.font = '20px system-ui, sans-serif';
-    ctx.fillText(`ORDER ${scenario.order.id}`, 16, 74);
-    ctx.fillText('SHIP TO: DEMO CUSTOMER', 16, 100);
-    ctx.fillText(`WT ${scenario.expectedWeightKg.toFixed(2)} KG`, 16, 126);
-    drawBarcode(ctx, 16, 150, w - 32, 150, scenario.order.id);
-    ctx.font = 'bold 24px ui-monospace, monospace';
-    ctx.fillText(scenario.order.id, 16, 340);
-  });
-  const appliedLabel = plane(shipLabelTex, 0.1, 0.15);
-  appliedLabel.rotation.x = -Math.PI / 2;
-  appliedLabel.position.set(0.05, carton.size[1] + 0.012, 0);
-  appliedLabel.visible = false;
-  carton.group.add(appliedLabel);
 
   // Right column: void fill, label printer, tape gun.
   const BK = L.basket;
@@ -394,8 +446,8 @@ export function buildPackStation(scenario) {
   printerScreen.mesh.rotation.x = -Math.PI / 2;
   station.add(printerScreen.mesh);
   const label = new THREE.Group();
-  const labelMesh = plane(shipLabelTex, 0.1, 0.15);
-  labelMesh.material = new THREE.MeshLambertMaterial({ map: shipLabelTex, side: THREE.DoubleSide, emissive: 0x000000 });
+  const labelMesh = plane(shipLabel.texture, 0.1, 0.15);
+  labelMesh.material = new THREE.MeshLambertMaterial({ map: shipLabel.texture, side: THREE.DoubleSide, emissive: 0x000000 });
   label.add(labelMesh);
   tag(label, 'pk:label', 'Shipping label — grab and place on the carton top');
   label.visible = false;
@@ -403,33 +455,43 @@ export function buildPackStation(scenario) {
 
   const tapeGun = makeTapeGun();
   station.add(tapeGun.group);
+  const tapeLabel = plane(textTexture('TAPE GUN', { w: 256, h: 56, font: 'bold 34px system-ui', bg: '#10151b' }), 0.12, 0.026);
+  tapeLabel.position.set(L.tape.x, 0.15, L.tape.z + 0.02);
+  station.add(tapeLabel);
+
+  // Scanner stands upright in a cradle at the front, labelled, so it is the
+  // obvious first thing to pick up.
   const scanner = makeScannerGun();
   station.add(scanner.group);
+  const SCN = L.scanner;
+  station.add(box(0.07, 0.03, 0.07, lambert(0x22272d), SCN.x, 0.015, SCN.z));
+  station.add(box(0.05, 0.02, 0.05, lambert(0x3a4350), SCN.x, 0.04, SCN.z + 0.01));
+  const scannerLabel = plane(textTexture('SCANNER', { w: 256, h: 56, font: 'bold 36px system-ui', bg: '#3a2f05', fg: '#ffe27a' }), 0.12, 0.026);
+  scannerLabel.position.set(SCN.x, 0.26, SCN.z);
+  station.add(scannerLabel);
 
-  // Items.
-  const itemStyle = {
-    mug: { base: '#f4f4f0', accent: '#2b4a6b', art: mugArt, barcodeFace: 'pz' },
-    book: { base: '#1f3557', accent: '#c9a227', art: bookArt, barcodeFace: 'py' },
-    case: { base: '#5b2d8e', accent: '#ff7ab6', art: caseArt, barcodeFace: 'py' },
-  };
+  // Items: the whole catalogue is built once; each order shows its own three.
   const items = {};
-  for (const key of scenario.itemOrder) {
-    const it = makeItem(scenario.items[key], itemStyle[key]);
+  for (const key of Object.keys(PACK_CATALOG)) {
+    const it = makeItem(PACK_CATALOG[key], ITEM_STYLES[key]);
+    it.group.visible = false;
     station.add(it.group);
     items[key] = it;
   }
 
-  // WMS monitor on an arm.
+  // Order monitor (WMS) on its own floor pole, to the learner's left.
   const M = L.monitor;
-  station.add(box(0.03, 0.44, 0.03, steel, 0.33, 0.22, -0.97));
-  const arm = box(0.27, 0.02, 0.02, steel, 0.465, 0.42, -0.95);
-  station.add(arm);
   const monitor = new THREE.Group();
   monitor.position.set(M.x, M.y, M.z);
   monitor.rotation.y = Math.atan2(-M.x, -M.z); // face the learner
-  monitor.add(box(M.w + 0.02, M.h + 0.02, 0.02, lambert(0x15191e), 0, 0, -0.012));
+  monitor.add(box(M.w + 0.025, M.h + 0.025, 0.025, lambert(0x15191e), 0, 0, -0.014));
+  monitor.add(box(0.08, 0.06, 0.03, steel, 0, 0, -0.04)); // VESA mount
+  monitor.add(box(0.035, 1.8, 0.035, steel, 0, -0.9, -0.07)); // pole to the floor, behind the screen
   const wms = new WmsScreen(M.w, M.h);
   monitor.add(wms.mesh);
+  const monSign = plane(textTexture('ORDER MONITOR', { w: 512, h: 72, font: 'bold 46px system-ui', bg: '#1b6ec2' }), 0.3, 0.042);
+  monSign.position.set(0, M.h / 2 + 0.04, 0);
+  monitor.add(monSign);
   station.add(monitor);
 
   // Outbound roller conveyor (right) and incoming roller conveyor (left).
@@ -503,9 +565,39 @@ export function buildPackStation(scenario) {
   };
 
   return {
-    station, tote, toteLabel, items, flats, carton, cartonPillows, appliedLabel, pillow, label,
+    station, tote, toteLabel, drawToteLabel, items, flats, cartons, shipLabel, pillow, label,
     tapeGun, scanner, printer, printerScreen, scaleScreen, wms, releaseBtn, zones, monitor,
   };
+}
+
+/** Shipping label artwork, redrawn per order. */
+export class ShipLabel {
+  constructor() {
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = 256;
+    this.canvas.height = 384;
+    this.texture = new THREE.CanvasTexture(this.canvas);
+    this.texture.colorSpace = THREE.SRGBColorSpace;
+    this.texture.anisotropy = 8;
+  }
+
+  draw(scenario) {
+    const ctx = this.canvas.getContext('2d');
+    const w = 256;
+    ctx.fillStyle = '#fbfbf7';
+    ctx.fillRect(0, 0, 256, 384);
+    ctx.fillStyle = '#111';
+    ctx.font = 'bold 30px system-ui, sans-serif';
+    ctx.fillText('GROUND', 16, 40);
+    ctx.font = '20px system-ui, sans-serif';
+    ctx.fillText(`ORDER ${scenario.order.id}`, 16, 74);
+    ctx.fillText('SHIP TO: DEMO CUSTOMER', 16, 100);
+    ctx.fillText(`WT ${scenario.expectedWeightKg.toFixed(2)} KG`, 16, 126);
+    drawBarcode(ctx, 16, 150, w - 32, 150, scenario.order.id);
+    ctx.font = 'bold 24px ui-monospace, monospace';
+    ctx.fillText(scenario.order.id, 16, 340);
+    uploadCanvas(this.texture, this.canvas);
+  }
 }
 
 /** WMS monitor: order header, item check-off, carton, weight, label. */
@@ -550,7 +642,7 @@ export class WmsScreen {
       ctx.fillStyle = '#9fb3c8';
       ctx.font = '30px system-ui, sans-serif';
       ctx.fillText(`Tote ${view.tote} is waiting on the left.`, 40, H / 2 + 40);
-      this.texture.needsUpdate = true;
+      uploadCanvas(this.texture, this.canvas);
       return;
     }
     let y = 100;
@@ -573,7 +665,7 @@ export class WmsScreen {
       }
       ctx.fillStyle = '#9fb3c8';
       ctx.font = '22px ui-monospace, monospace';
-      ctx.fillText(r.sku, 22, y + 30);
+      ctx.fillText(`${r.sku}   ${r.dims}`, 22, y + 30);
       ctx.font = 'bold 30px system-ui, sans-serif';
       ctx.fillStyle = '#ffffff';
       ctx.fillText('1', 530, y);
@@ -593,7 +685,9 @@ export class WmsScreen {
     ctx.fillRect(0, H - 120, W, 120);
     ctx.font = '26px system-ui, sans-serif';
     ctx.fillStyle = '#cfe0f2';
-    ctx.fillText(`CARTON: ${view.carton ?? '--'}`, 22, H - 88);
+    ctx.fillStyle = view.carton ? '#cfe0f2' : '#ffd97a';
+    ctx.fillText(view.carton ? `CARTON: ${view.carton}` : `USE CARTON: ${view.recommended}`, 22, H - 88);
+    ctx.fillStyle = '#cfe0f2';
     ctx.fillText(`WEIGHT: ${view.weight} kg  (expected ${view.range})`, 22, H - 50);
     ctx.textAlign = 'right';
     ctx.fillStyle = view.confirmed ? '#7ee2a8' : view.sealed ? '#ffd97a' : '#cfe0f2';
@@ -601,6 +695,6 @@ export class WmsScreen {
     ctx.fillStyle = view.label === 'APPLIED' ? '#7ee2a8' : '#cfe0f2';
     ctx.fillText(`LABEL: ${view.label}`, W - 22, H - 50);
     ctx.textAlign = 'left';
-    this.texture.needsUpdate = true;
+    uploadCanvas(this.texture, this.canvas);
   }
 }

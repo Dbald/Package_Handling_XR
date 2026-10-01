@@ -107,3 +107,25 @@ Proposed gate: ≥ 4 of 5 complete both paths without intervention.
 - [ ] Mistake run: pack the phone case (critical), ship before labelling (critical). Both are blocked and retained, and the result is practice recommended.
 - [ ] Frame rate with both stations in view (OVR Metrics: ≥ 95 % of frames ≤ 13.9 ms at 72 Hz).
 - [ ] Order monitor text legible from the standing position.
+
+---
+
+## Session 2: first run of both stations (Oct 1, 2026, Devin, Quest 2, standing)
+
+**Worked:** both stations completed as planned. Setup controls and readable panels worked. The label print quality was praised. The floating step prompts help. Scan, quarantine and handling feel natural.
+
+**Issues → fixes**
+| Observation | Cause | Fix |
+|---|---|---|
+| Image "clips and distorts" when moving the head while the controller ray is on the menu, and sometimes while carrying a package | Dropped frames. Every hover change re-uploaded the full ~10 MB panel texture (and feedback changes did the same), so Quest reprojected the missed frames. | Hover is now an overlay mesh (no redraw). Texture uploads are asynchronous via ImageBitmap. Instrument screens update at 10 Hz. Per-frame allocations removed. **Re-test, and check with `?perf`.** |
+| Order monitor rotated into its arm and overlapping the OUTBOUND sign; bottom text unreadable | Yawed screen on a side arm | Monitor moved to the learner's left, on its own floor pole, with an ORDER MONITOR sign. Larger screen. |
+| Scanner not recognisable (dark, lying flat in front of the tote) | — | Bright yellow, standing in a labelled cradle. Prompt now says *PICK UP SCANNER* first. |
+| Didn't know to read the order monitor, or which item was extra | — | Step text points to the monitor (left). The exception step names the scanned extra item. |
+| "How am I supposed to know it's size M?" | No rule source | The monitor recommends the carton size (WMS cartonization). Item and carton sizes are shown. |
+| Tape gun felt abstract | Single trigger press | Hold the trigger and draw the gun along the seam. Tape extends under the gun, with haptic and sound. Flaps fold shut. |
+| Void fill visible through the closed carton | Pillow positions outside the walls | Pillows scale with the carton and are clamped inside the walls. |
+| Want to replay Station 1 with other configurations | — | **Replay Station 1 (new order)**: three orders with different items, cartons and mis-picks. |
+| Room needs realism | Flat-coloured shell | Textured concrete floor and block-and-cladding walls with windows. Columns, trusses, high-bay lights, stocked racking, pallets, lanes and baked contact shadows. 92 draw calls worst case. |
+| Learners may ignore a floating text panel | — | The panel is now a physical work-instruction console. The YOUR TASK band and step progress bar sit on screen. The light bar pulses with a chime on each new task. |
+
+**Still to record:** OS and browser version, a `?perf` reading at each station, and the five-person usability test.

@@ -2,7 +2,7 @@
 // in-VR panel and the HTML desktop fallback render the same content and the
 // same action ids — one source for input parity (PRD FR-12).
 import { SCENARIO, weightRange } from './scenario.js';
-import { PACK_SCENARIO, packWeightRange } from './pack/scenario.js';
+import { packWeightRange } from './pack/scenario.js';
 
 const fmtTime = (ms) => {
   const s = Math.floor(ms / 1000);
@@ -218,8 +218,11 @@ function buildExerciseSpec(view) {
     last.push({ id: 'release', label: 'Confirm release', variant: st === 'staged' ? 'primary' : 'default' });
   }
   return {
-    kicker: `${def.label} · ${def.id} · Step ${stepIdx} of ${steps.length}`,
+    kicker: `Station 2 · ${def.label} · ${def.id} · Step ${stepIdx} of ${steps.length}`,
     title,
+    objective: true,
+    progress: { i: stepIdx, n: steps.length },
+    bodySize: 30,
     body,
     feedback: view.feedback,
     buttons: [decision, manip, place, last],
@@ -231,7 +234,7 @@ export function buildHelpSpec(view) {
   const { settings, vr } = view;
   const controls = vr ? [...SCENARIO.controls.vr, 'Scanner and tape gun: pick up, aim, pull TRIGGER to use.'] : SCENARIO.controls.desktop;
   const atPack = view.session.stationKey === 'pack';
-  const rules = atPack ? PACK_SCENARIO.rules.slice(0, 3) : SCENARIO.rules.slice(1, 3);
+  const rules = atPack ? view.session.pack.scenario.rules.slice(0, 3) : SCENARIO.rules.slice(1, 3);
   return {
     kicker: 'Help · training is paused while this is open',
     title: 'Controls, rules & settings',
@@ -267,7 +270,7 @@ function buildSessionBriefingSpec(view) {
     bodySize: 28,
     body: [
       { text: 'Station 1 · Pack-Out: pack a customer order correctly and send it to the dock.', bold: true },
-      ...PACK_SCENARIO.rules.map((r) => ({ text: r, bullet: true, size: 25 })),
+      ...view.session.pack.scenario.rules.map((r) => ({ text: r, bullet: true, size: 25 })),
       { text: 'Station 2 · Dock Check: inspect outgoing packages before they are loaded.', bold: true },
       { text: 'Synthetic demo rules. Scored on first attempts; mistakes can be corrected but stay on the record.', color: '#9aa7b4', size: 23 },
     ],
@@ -282,22 +285,32 @@ function buildSessionBriefingSpec(view) {
 
 const PACK_STEPS = ['open', 'scan', 'exception', 'carton', 'pack', 'dunnage', 'seal', 'weigh', 'print', 'label', 'outbound', 'release'];
 
-function packStepText(step, vr) {
-  const { min, max } = packWeightRange();
+function packStepText(step, vr, e) {
+  const S = e.scenario;
+  const { min, max } = packWeightRange(S);
+  const extra = S.itemOrder.find((k) => !S.items[k].onOrder);
+  const extraKnown = extra && e.items[extra].scanned;
+  const fragile = S.itemOrder.filter((k) => S.items[k].onOrder && S.items[k].fragile).map((k) => S.items[k].name.toLowerCase());
   const t = {
     open: ['Open the order', vr
-      ? 'Pick up the handheld scanner (front left). Aim the red beam at the tote label and pull TRIGGER.'
-      : 'Select Scan tote. The order opens on the monitor (right).'],
+      ? 'Pick up the yellow SCANNER (front of the bench). Aim the red beam at the tote label and pull TRIGGER.'
+      : 'Select Scan tote. The order opens on the ORDER MONITOR (left).'],
     scan: ['Scan each item', vr
-      ? 'Scan every item in the tote and compare it with the order on the monitor.'
-      : 'Choose an item with the Item button, then Scan item. Compare with the monitor.'],
-    exception: ['Divert the extra item', 'One item is NOT on this order. Put it in the yellow EXCEPTION bin; never pack it.'],
-    carton: ['Choose a carton', vr
-      ? 'Take the smallest carton that fits everything from the slots at the back and set it on the pack scale.'
-      : 'Pick the smallest carton that fits everything (inside sizes are on the slot labels).'],
+      ? 'Scan every item in the tote. Check each one against the ORDER MONITOR on your left: anything not listed there is NOT on the order.'
+      : 'Choose an item with the Item button, then Scan item. Compare with the ORDER MONITOR (left).'],
+    exception: ['Divert the extra item', extraKnown
+      ? `The ${S.items[extra].name.toLowerCase()} is NOT on this order (it is not on the monitor). Put it in the yellow EXCEPTION bin; never pack it.`
+      : 'One item in the tote is NOT on this order. Put it in the yellow EXCEPTION bin; never pack it.'],
+    carton: ['Choose the carton', vr
+      ? `The ORDER MONITOR shows which carton to use: size ${S.correctCarton}. Take it from the slots at the back and set it on the pack scale.`
+      : `The ORDER MONITOR recommends size ${S.correctCarton} (the smallest that fits). Pick that carton.`],
     pack: ['Pack the order', vr ? 'Place each order item into the carton.' : 'Select an order item, then Pack in carton.'],
-    dunnage: ['Protect the fragile item', vr ? 'Take air pillows from the VOID FILL basket and drop them into the carton.' : 'Select Add void fill.'],
-    seal: ['Seal the carton', vr ? 'Pick up the tape gun, hold it over the carton and pull TRIGGER.' : 'Select Seal carton.'],
+    dunnage: ['Protect the fragile item', vr
+      ? `The ${fragile.join(' and ')} ${fragile.length > 1 ? 'are' : 'is'} fragile. Drop air pillows from the VOID FILL basket into the carton.`
+      : 'Select Add void fill.'],
+    seal: ['Seal the carton', vr
+      ? 'Pick up the TAPE GUN. Hold it at one end of the top seam, keep TRIGGER held and draw it across to the other end.'
+      : 'Select Seal carton.'],
     weigh: ['Confirm the weight', `Read the pack scale. Expected ${min.toFixed(2)} – ${max.toFixed(2)} kg. Is the weight within range?`],
     print: ['Print the shipping label', vr ? 'Select Print label, or point at the label printer and pull TRIGGER.' : 'Select Print label.'],
     label: ['Apply the label', vr ? 'Take the label from the printer and place it on top of the carton.' : 'Select Apply label.'],
@@ -318,8 +331,8 @@ export function buildPackSpec(view) {
   const st = view.packStation;
   const step = e.step();
   const idx = PACK_STEPS.indexOf(step) + 1;
-  const { title, body } = packStepText(step, view.vr);
-  const S = PACK_SCENARIO;
+  const { title, body } = packStepText(step, view.vr, e);
+  const S = e.scenario;
   const decision = [];
   if (!e.carton) S.cartonOrder.forEach((k) => decision.push({ id: `pk:carton:${k}`, label: `Carton ${k}` }));
   if (e.sealed && !e.weightConfirmed) {
@@ -349,6 +362,9 @@ export function buildPackSpec(view) {
   return {
     kicker: `Station 1 · Pack-Out · ${S.order.id} · Step ${idx} of ${PACK_STEPS.length}`,
     title,
+    objective: true,
+    progress: { i: idx, n: PACK_STEPS.length },
+    bodySize: 30,
     body,
     feedback: view.feedback,
     buttons: [decision, itemRow, ...chunk(tools, 4), last],
@@ -371,7 +387,11 @@ function buildPackDoneSpec(view) {
       'Next: Station 2 · Dock Check. You will inspect outgoing packages before they are loaded.',
     ],
     feedback: view.feedback,
-    buttons: [[{ id: 'help', label: 'Help' }, { id: 'station:dock', label: 'Continue to Station 2', variant: 'primary' }]],
+    buttons: [[
+      { id: 'help', label: 'Help' },
+      { id: 'station:replay-pack', label: 'Replay Station 1 (new order)' },
+      { id: 'station:dock', label: 'Continue to Station 2', variant: 'primary' },
+    ]],
   };
 }
 

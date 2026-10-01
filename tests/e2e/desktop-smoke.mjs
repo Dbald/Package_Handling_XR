@@ -99,6 +99,29 @@ try {
   assert.equal(pr.score, 100, 'perfect pack-out scores 100');
   assert.equal(pr.status, 'proficient');
   await shot('03d-pack-done');
+
+  // Replay Station 1 with the next order: different items, carton S, no fragile item.
+  await act('station:replay-pack');
+  assert.equal(await page.evaluate(() => globalThis.__app.session.pack.scenario.order.id), 'ORD-58257');
+  assert.deepEqual(await page.evaluate(() => globalThis.__app.session.pack.scenario.itemOrder), ['charger', 'cable', 'book']);
+  await act('pk:scan:tote');
+  await act('pk:scan:item'); // charger
+  await act('pk:select');
+  await act('pk:scan:item'); // cable
+  await act('pk:select');
+  await act('pk:scan:item'); // book: not on this order
+  await act('pk:divert');
+  await act('pk:carton:S');
+  await act('pk:pack');
+  await act('pk:pack');
+  await act('pk:seal'); // nothing fragile: no void fill required
+  await act('pk:weight:within');
+  await act('pk:print');
+  await act('pk:apply');
+  await act('pk:outbound');
+  await act('release');
+  const pr2 = await page.evaluate(() => globalThis.__app.session.pack.results());
+  assert.equal(pr2.score, 100, 'second order also perfect');
   await act('station:dock');
   await settle();
   await act('start');
@@ -493,10 +516,22 @@ async function vrPackLogic(browser, errors) {
   await aim(P.x + 0.6, 0.6, P.z + 0.6, P.x + 0.6, 0.6, P.z);
   await trig();
   assert.equal(await pe((e) => e.sealed), false);
-  // Gun hangs 7 cm below and 11 cm ahead of the ray origin.
-  await aim(P.x, 0.21 + 0.07, P.z + 0.11, P.x, 0.21 + 0.07, P.z - 1);
+  // Gun nose hangs 7 cm below and 11 cm ahead of the ray origin. Hold the
+  // trigger at one end of the seam and draw the gun across the carton top.
+  const noseY = P.top + 0.18 + 0.02;
+  const at = (x) => aim(x, noseY + 0.07, P.z + 0.11, x, noseY + 0.07, P.z - 1);
+  await at(P.x - 0.17);
   await trig();
-  assert.equal(await pe((e) => e.sealed), true, 'tape gun seals the carton');
+  assert.equal(await pe((e) => e.sealed), false, 'pressing alone does not seal');
+  for (let x = -0.17; x <= 0.171; x += 0.02) {
+    await at(P.x + x);
+    await page.waitForTimeout(40);
+    if (x > -0.05 && x < 0.0) {
+      assert.equal(await pe((e) => e.sealed), false, 'half a strip is not a seal');
+    }
+  }
+  await page.waitForFunction(() => globalThis.__app.session.pack.sealed, null, { timeout: 3000 });
+  await ev(() => globalThis.__app.onHeldTriggerEnd(globalThis.__app.xrInput.controllers[0]));
   await let_();
 
   await act('pk:weight:within');

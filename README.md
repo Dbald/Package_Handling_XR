@@ -9,7 +9,7 @@ One customer order, from packing to shipping:
 
 The primary target is **Meta Quest 2 in Meta Quest Browser**, opened from an HTTPS link, with no PC, Link cable or Air Link. The desktop preview is secondary.
 
-> **Status:** Station 2 has been run on a Quest 2 (see [`docs/HEADSET_TEST_LOG.md`](docs/HEADSET_TEST_LOG.md), session 1). **Station 1 is new and has not been tested on the headset yet.** The headset run is the release gate (PRD §12).
+> **Status:** both stations have been run on a Quest 2 (see [`docs/HEADSET_TEST_LOG.md`](docs/HEADSET_TEST_LOG.md), sessions 1–2). The session 2 fixes have not been re-tested on the headset yet: frame-drop fix, console, taping, monitor and the warehouse hall. The headset run is the release gate (PRD §12).
 
 ## Run it
 
@@ -31,17 +31,26 @@ WebXR needs **HTTPS**. `localhost` works for desktop, but the headset needs a re
 1. Open **Meta Quest Browser**, enter the HTTPS URL and select **Enter VR**. The scene fades in from dark.
 2. **Comfort setup** (not scored): Seated or Standing, bench height, Recenter. Practise grabbing on the grey box.
 3. **Shift briefing**, then **Start Station 1**. For demos, **Skip to Station 2** jumps straight to the dock. A skipped station is reported as *Incomplete*, so it can never produce a pass.
-4. When Station 1 is done, **Continue to Station 2**. The view fades out and back in at the dock bench. There is no walking or artificial movement.
+4. When Station 1 is done, **Continue to Station 2**, or **Replay Station 1 (new order)** to practise with a different order. There are three orders, each with different items, a different correct carton and a different mis-picked item. Continuing fades out and back in at the dock bench. There is no walking or artificial movement.
 5. The combined results show each station's score, critical errors and a checkpoint breakdown. **Replay** resets everything.
 
 | Input | Action |
 |---|---|
 | Grip (either hand) | Grab / release. Point at a far object and squeeze to pull it to your hand. |
-| Trigger | Press ray-targeted buttons. Use a held tool: the **scanner** reads what its red beam hits, and the **tape gun** seals the carton when held over it. At Station 2, trigger while holding a package in the scan zone scans it. |
+| Trigger | Press ray-targeted buttons. Use a held tool: the **scanner** reads what its red beam hits. For the **tape gun**, hold the trigger at one end of the carton's top seam and draw it across. At Station 2, trigger while holding a package in the scan zone scans it. |
 | Trigger on the label printer | Prints the label (once the weight is confirmed) |
 | Thumbstick while holding | Rotate the held object |
 | B / Y | Help and pause panel |
 | Panel buttons | Assisted equivalents of every step, for seated or limited-reach use and for desktop. Every option is always offered (all carton sizes, all destinations), so the buttons never give away the answer. |
+
+**Guidance design.** Instructions appear on a physical **work-instruction console**: a mounted display with a bezel, floor stand and status light. Its **YOUR TASK** band shows the single thing to do now, and a segmented bar shows progress through the steps. When the task changes, the light bar pulses with a chime. Floating prompts mark the relevant tool, for example *PICK UP SCANNER* and then *SCAN TOTE LABEL*. The **order monitor** on the left lists the order and recommends the carton size, as a real WMS does.
+
+**Performance on Quest 2.**
+- Hovering a button moves a small overlay instead of redrawing the panel.
+- Panel and screen images are uploaded asynchronously (`createImageBitmap`).
+- Instrument screens refresh at 10 Hz.
+- All static scenery is batched, with plain colours baked into vertex colours, and stock cartons are instanced. The fully dressed hall peaks at about 92 draw calls in a full 360° turn.
+- Add `?perf` to the URL to show an fps and frame-time meter under the console.
 
 ## Architecture
 
@@ -55,7 +64,8 @@ src/guidance.js        state → UI spec. One spec drives both the VR panel and 
 src/app.js             orchestrator: stations, transitions, picking, grab/drop, XR lifecycle
 src/pack/station.js    Station 1 interactions: scanner gun, tape gun, printer, carton, drop targets
 src/pack/scene.js      Station 1 geometry: tote, exception bin, carton slots, pack scale, monitor, rollers
-src/scene.js           hall + Station 2 geometry          src/merge.js  static draw-call batching
+src/scene.js           Station 2 geometry                 src/dressing.js  warehouse hall (textures, racking, AO)
+src/console.js         instruction console + ?perf meter  src/merge.js     static draw-call batching
 src/xr-input.js        controllers: grab, ray select, tools, haptics, tracking loss
 src/desktop-input.js   mouse look, click-select, keyboard
 ```

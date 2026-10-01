@@ -39,6 +39,8 @@ export class Sfx {
       case 'critical': [0, 0.18, 0.36].forEach((s) => this.tone(180, s, 0.14, 'sawtooth', 0.06)); break;
       case 'warning': this.tone(440, 0, 0.14, 'triangle', 0.07); break;
       case 'click': this.tone(1200, 0, 0.03, 'sine', 0.03); break;
+      case 'tape': this.tone(140 + Math.random() * 60, 0, 0.06, 'sawtooth', 0.025); break;
+      case 'step': this.tone(784, 0, 0.12, 'sine', 0.05); this.tone(1047, 0.12, 0.2, 'sine', 0.05); break;
       default: break;
     }
   }

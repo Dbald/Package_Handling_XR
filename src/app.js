@@ -9,10 +9,11 @@ import { PACK_LAYOUT } from './pack/scene.js';
 import { SCENARIO, weightRange } from './scenario.js';
 import { buildWorld, LAYOUT, PACKAGE_SIZES } from './scene.js';
 import { brandTexture } from './textures.js';
-import { Panel } from './panel.js';
+import { Panel, Tag } from './panel.js';
 import { buildMainSpec, buildHelpSpec, markerTarget } from './guidance.js';
 import { Sfx } from './audio.js';
 import { mergeStatic } from './merge.js';
+import { InstructionConsole, PerfMeter } from './console.js';
 import { startXRSession, describeXRError } from './xr-session.js';
 import { XRInput } from './xr-input.js';
 import { DesktopInput } from './desktop-input.js';
@@ -59,13 +60,12 @@ export class App {
     this.scene.add(this.world.worldRoot);
 
     this.mainPanel = new Panel({ width: 1.3, height: 0.86, name: 'main-panel' });
+    this.console = new InstructionConsole(this.mainPanel);
+    if (new URLSearchParams(globalThis.location?.search ?? '').has('perf')) this.perf = new PerfMeter(this.console, Tag);
     this.helpPanel = new Panel({ width: 1.1, height: 1.02, name: 'help-panel' });
     this.helpPanel.mesh.visible = false;
     // Modal: always drawn on top so a held/assisted package can never cover it.
-    this.helpPanel.mesh.traverse((o) => {
-      o.material.depthTest = false;
-      o.renderOrder = o === this.helpPanel.mesh ? 21 : 20;
-    });
+    this.helpPanel.setOnTop(20);
     this.scene.add(this.helpPanel.mesh);
 
     // VR entry intro: fade up from dark behind a brief title card. Nothing in
@@ -139,17 +139,25 @@ export class App {
     return this.world.station;
   }
 
+  /**
+   * Head pose, computed at most once per frame and reused (no per-call
+   * allocations: garbage-collection pauses cause visible hitches in VR).
+   * Callers must treat the returned vectors as read-only.
+   */
   viewerPose() {
+    if (this.poseCache && this.poseCache.frame === this.frameNo) return this.poseCache;
+    const pc = this.poseCache ?? (this.poseCache = {
+      pos: new THREE.Vector3(), quat: new THREE.Quaternion(), fwd: new THREE.Vector3(), frame: -1,
+    });
     const cam = this.renderer.xr.isPresenting ? this.renderer.xr.getCamera() : this.camera;
-    const pos = new THREE.Vector3();
-    const quat = new THREE.Quaternion();
-    cam.getWorldPosition(pos);
-    cam.getWorldQuaternion(quat);
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(quat);
-    fwd.y = 0;
-    if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1);
-    fwd.normalize();
-    return { pos, quat, fwd };
+    cam.getWorldPosition(pc.pos);
+    cam.getWorldQuaternion(pc.quat);
+    pc.fwd.set(0, 0, -1).applyQuaternion(pc.quat);
+    pc.fwd.y = 0;
+    if (pc.fwd.lengthSq() < 1e-6) pc.fwd.set(0, 0, -1);
+    pc.fwd.normalize();
+    pc.frame = this.frameNo;
+    return pc;
   }
 
   view() {
@@ -182,6 +190,13 @@ export class App {
     const main = buildMainSpec(view);
     const help = this.helpOpen ? buildHelpSpec(view) : null;
     const key = JSON.stringify([main, help]);
+    // New task → pulse the console light and chime, so attention returns to it.
+    const step = main.objective ? `${main.kicker}|${main.title}` : null;
+    if (step && step !== this.lastStep) {
+      this.console.pulse(performance.now());
+      if (this.lastStep) this.sfx.play('step');
+    }
+    this.lastStep = step;
     if (key !== this.lastSpecKey) {
       this.lastSpecKey = key;
       this.mainPanel.setContent(main);
@@ -238,9 +253,10 @@ export class App {
 
   placeMainPanel() {
     const group = this.activeStationGroup();
-    if (this.mainPanel.mesh.parent !== group) group.add(this.mainPanel.mesh);
+    const con = this.console.group;
+    if (con.parent !== group) group.add(con);
     const P = this.stationKey === 'pack' ? PACK_LAYOUT.panel : LAYOUT.panel;
-    this.mainPanel.mesh.position.set(P.x, this.settings.posture === 'seated' ? P.seatedY : P.standingY, P.z);
+    con.position.set(P.x, this.settings.posture === 'seated' ? P.seatedY : P.standingY, P.z);
     const marker = this.world.marker;
     if (marker.parent !== group) group.add(marker);
   }
@@ -285,6 +301,22 @@ export class App {
       this.recenter();
     });
     return { tone: 'info', message: 'Station 2 · Dock Check. Read the briefing, then start.' };
+  }
+
+  /** Station 1 again with the next order configuration. */
+  replayPack() {
+    if (this.session.phase !== 'pack') return null;
+    for (const c of this.xrInput.controllers) if (c.held && c.held.startsWith('pk:')) this.freezeHeld(c, 'move');
+    this.packOrder = (this.packOrder ?? 0) + 1;
+    this.pack.setOrder(this.packOrder);
+    this.session.replayPack();
+    const o = this.pack.s.order;
+    return { tone: 'info', message: `New order ${o.id} in tote ${o.tote}. Pick up the scanner and open it.` };
+  }
+
+  /** Trigger released while holding something (continuous tools like the tape gun). */
+  onHeldTriggerEnd(c) {
+    if (c.held && c.held.startsWith('pk:')) this.pack.onTriggerEnd(c);
   }
 
   objFor(key) {
@@ -352,6 +384,7 @@ export class App {
       case 'start': r = this.session.startDock(); break;
       case 'station':
         if (arg === 'pack') r = this.session.startPack();
+        else if (arg === 'replay-pack') r = this.replayPack();
         else r = this.goToDock(arg === 'skip');
         break;
       case 'toggle':
@@ -793,7 +826,8 @@ export class App {
     this.helpPanel.mesh.visible = false;
     this.session.reset();
     this.resetScene();
-    this.pack.reset();
+    this.packOrder = 0;
+    this.pack.setOrder(0);
     this.placeMainPanel();
     this.recenter();
     this.feedback = { tone: 'info', text: 'New session started. Everything has been reset.' };
@@ -1029,9 +1063,21 @@ export class App {
     tag.set(null);
   }
 
-  updateInstruments(now) {
+  updateInstruments(now, slow = true) {
     const { scaleScreen, scannerScreen, scanZone } = this.world;
     const B = SCENARIO.packages.B;
+    const flash = this.scannerFlash && this.scannerFlash.until > now ? this.scannerFlash : null;
+    // Scan-zone feedback (per frame): bright when a held barcode is aligned or just scanned.
+    let aligned = false;
+    if (this.stationKey === 'dock') {
+      for (const c of this.xrInput.controllers) {
+        if (c.held && this.world.packages[c.held] && this.scanAlignment(c.held).aligned) aligned = true;
+      }
+    }
+    const glow = aligned || (flash && flash.ok);
+    scanZone.fill.material.opacity = glow ? 0.25 : 0.08;
+    scanZone.edges.material.color.setHex(glow ? 0xb6ffd6 : 0x39d98a);
+    if (!slow) return;
     const { min, max } = weightRange(B);
     const onScale = SCENARIO.order.find((k) => this.phys[k].zone === 'scale');
     const range = { text: `EXPECTED ${min.toFixed(2)}–${max.toFixed(2)} kg`, size: 28, color: '#cfe8da' };
@@ -1046,7 +1092,6 @@ export class App {
     } else {
       scaleScreen.show([{ text: '0.00 kg', size: 70, bold: true, color: '#6fae8c' }, range, { text: 'READY', size: 26, color: '#6fae8c' }]);
     }
-    const flash = this.scannerFlash && this.scannerFlash.until > now ? this.scannerFlash : null;
     const scanned = this.engine.stateAtLeast('B', 'scanned') && this.engine.phase !== 'setup';
     if (flash && !flash.ok) {
       scannerScreen.show([{ text: 'NO READ', size: 44, bold: true, color: '#ffb36b' }, { text: 'align barcode in zone', size: 24, color: '#ffb36b' }], { bg: '#1a0e05' });
@@ -1055,14 +1100,6 @@ export class App {
     } else {
       scannerScreen.show([{ text: 'READY', size: 44, bold: true, color: '#9fc7ff' }, { text: 'present barcode', size: 26, color: '#9fc7ff' }], { bg: '#070d18' });
     }
-    // Scan-zone feedback: bright when a held barcode is aligned or just scanned.
-    let aligned = false;
-    for (const c of this.xrInput.controllers) {
-      if (c.held && c.held !== 'practice' && this.scanAlignment(c.held).aligned) aligned = true;
-    }
-    const glow = aligned || (flash && flash.ok);
-    scanZone.fill.material.opacity = glow ? 0.25 : 0.08;
-    scanZone.edges.material.color.setHex(glow ? 0xb6ffd6 : 0x39d98a);
   }
 
   updateMarker(t) {
@@ -1140,6 +1177,8 @@ export class App {
     const dt = Math.min(this.clock.getDelta(), 0.1);
     const t = this.clock.elapsedTime;
     const now = performance.now();
+    this.frameNo = (this.frameNo ?? 0) + 1;
+    this.perf?.sample(now);
     this.updateTweens(dt);
     if (this.xr) {
       if (this.pendingRecenter > 0 && --this.pendingRecenter === 0) this.recenter();
@@ -1149,11 +1188,15 @@ export class App {
       this.desktop.update(dt);
     }
     this.updateTransition(dt);
-    this.updateInstruments(now);
-    this.pack.update(now);
+    // Instrument screens only need ~10 Hz; per-frame work stays minimal.
+    const slow = now - (this.lastSlow ?? 0) > 100;
+    if (slow) this.lastSlow = now;
+    this.updateInstruments(now, slow);
+    this.pack.update(now, slow);
     this.updateMarker(t);
     this.updateShadows();
     this.mainPanel.update();
+    this.console.update(now, this.settings.reducedMotion);
     if (this.helpOpen) this.helpPanel.update();
     this.renderer.render(this.scene, this.camera);
   }

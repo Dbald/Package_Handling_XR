@@ -3,6 +3,31 @@
 // and a text label (PRD FR-09, §7).
 import * as THREE from 'three';
 
+/**
+ * Push a redrawn canvas to the GPU without stalling the frame: snapshot it as
+ * an ImageBitmap off the critical path (Quest Browser), else plain upload.
+ */
+export function uploadCanvas(texture, canvas) {
+  if (typeof globalThis.createImageBitmap !== 'function') {
+    texture.needsUpdate = true;
+    return;
+  }
+  const gen = (texture.userData.uploadGen = (texture.userData.uploadGen ?? 0) + 1);
+  createImageBitmap(canvas, { imageOrientation: 'flipY' }).then((bmp) => {
+    if (gen !== texture.userData.uploadGen) {
+      bmp.close?.();
+      return;
+    }
+    const old = texture.image;
+    texture.image = bmp;
+    texture.flipY = false;
+    texture.needsUpdate = true;
+    if (old && old !== canvas && typeof old.close === 'function') old.close();
+  }).catch(() => {
+    texture.needsUpdate = true;
+  });
+}
+
 export const TONES = {
   success: { color: '#2fae66', label: 'CORRECT', symbol: 'check' },
   error: { color: '#e0762b', label: 'NOT QUITE', symbol: 'cross' },
@@ -110,6 +135,8 @@ export class Panel {
     // text stays crisp in the headset.
     this.w = Math.round(width * pxPerMeter);
     this.h = Math.round(height * pxPerMeter);
+    this.wm = width;
+    this.hm = height;
     this.ss = supersample;
     this.canvas = document.createElement('canvas');
     this.canvas.width = Math.round(this.w * supersample);
@@ -129,6 +156,17 @@ export class Panel {
     );
     back.position.z = -0.009;
     this.mesh.add(back);
+    // Hover highlight is geometry, not a canvas redraw: aiming across buttons
+    // must never re-upload the panel texture (that dropped frames in VR).
+    this.hoverFill = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16, depthWrite: false, toneMapped: false }));
+    this.hoverFrame = new THREE.Mesh(this.frameGeometry(),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }));
+    for (const m of [this.hoverFill, this.hoverFrame]) {
+      m.visible = false;
+      m.position.z = 0.002;
+      this.mesh.add(m);
+    }
     this.spec = null;
     this.hover = null;
     this.buttons = [];
@@ -140,11 +178,63 @@ export class Panel {
     this.dirty = true;
   }
 
-  setHover(id) {
-    if (this.hover !== id) {
-      this.hover = id;
-      this.dirty = true;
+  /** Unit square outline (4 bars) scaled to the hovered button. */
+  frameGeometry() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(16 * 3), 3));
+    const idx = [];
+    for (let q = 0; q < 4; q++) {
+      const o = q * 4;
+      idx.push(o, o + 1, o + 2, o, o + 2, o + 3);
     }
+    g.setIndex(idx);
+    return g;
+  }
+
+  setHover(id) {
+    if (this.hover === id) return;
+    this.hover = id;
+    const b = id ? this.buttons.find((x) => x.id === id) : null;
+    this.hoverFill.visible = this.hoverFrame.visible = !!b;
+    if (!b) return;
+    const kx = this.wm / this.w;
+    const ky = this.hm / this.h;
+    const cx = (b.x + b.w / 2) * kx - this.wm / 2;
+    const cy = this.hm / 2 - (b.y + b.h / 2) * ky;
+    const w = b.w * kx;
+    const h = b.h * ky;
+    this.hoverFill.position.set(cx, cy, 0.002);
+    this.hoverFill.scale.set(w, h, 1);
+    const t = 0.005;
+    const x0 = cx - w / 2;
+    const x1 = cx + w / 2;
+    const y0 = cy - h / 2;
+    const y1 = cy + h / 2;
+    const quads = [
+      [x0, y1 - t, x1, y1], [x0, y0, x1, y0 + t], [x0, y0, x0 + t, y1], [x1 - t, y0, x1, y1],
+    ];
+    const pos = this.hoverFrame.geometry.attributes.position;
+    quads.forEach(([a, b2, c, d], q) => {
+      pos.setXYZ(q * 4, a, b2, 0.003);
+      pos.setXYZ(q * 4 + 1, c, b2, 0.003);
+      pos.setXYZ(q * 4 + 2, c, d, 0.003);
+      pos.setXYZ(q * 4 + 3, a, d, 0.003);
+    });
+    pos.needsUpdate = true;
+    this.hoverFrame.geometry.computeBoundingSphere();
+    this.hoverFrame.position.set(0, 0, 0);
+  }
+
+  /** Draw on top of everything (modal panels). */
+  setOnTop(order) {
+    this.mesh.traverse((o) => {
+      if (!o.material) return;
+      o.material.depthTest = false;
+      o.renderOrder = order;
+    });
+    this.mesh.renderOrder = order + 1;
+    this.hoverFill.renderOrder = order + 2;
+    this.hoverFrame.renderOrder = order + 3;
   }
 
   /** uv from a raycast hit → enabled button under it, or null. */
@@ -159,7 +249,11 @@ export class Panel {
     if (!this.dirty || !this.spec) return;
     this.dirty = false;
     this.draw(this.spec);
-    this.texture.needsUpdate = true;
+    uploadCanvas(this.texture, this.canvas);
+    // Buttons may have moved: re-place the hover highlight.
+    const h = this.hover;
+    this.hover = null;
+    this.setHover(h);
   }
 
   draw(spec) {
@@ -195,6 +289,18 @@ export class Panel {
 
     let y = pad;
     ctx.textBaseline = 'top';
+    // Step progress: one segment per step (done / current / to do), so the
+    // learner always knows where they are in the procedure.
+    if (spec.progress) {
+      const { i, n } = spec.progress;
+      const gap = 6;
+      const sw = (w - pad * 2 - gap * (n - 1)) / n;
+      for (let k = 0; k < n; k++) {
+        ctx.fillStyle = k < i - 1 ? '#2fae66' : k === i - 1 ? '#e0a526' : '#2a333d';
+        ctx.fillRect(pad + k * (sw + gap), 16, sw, k === i - 1 ? 12 : 8);
+      }
+      y += 8;
+    }
     if (spec.kicker) {
       ctx.fillStyle = '#9aa7b4';
       ctx.font = `600 26px ${FONT}`;
@@ -202,13 +308,29 @@ export class Panel {
       y += 38;
     }
     if (spec.title) {
-      ctx.fillStyle = '#ffffff';
-      ctx.font = `bold ${spec.titleSize ?? 46}px ${FONT}`;
-      for (const line of wrapText(ctx, spec.title, w - pad * 2)) {
-        ctx.fillText(line, pad, y);
-        y += (spec.titleSize ?? 46) + 8;
+      const size = spec.titleSize ?? 46;
+      ctx.font = `bold ${size}px ${FONT}`;
+      const inset = spec.objective ? 26 : 0;
+      const lines = wrapText(ctx, spec.title, w - pad * 2 - inset * 2);
+      if (spec.objective) {
+        // Highlighted "YOUR TASK" band: the one thing to do right now.
+        const bandH = 40 + lines.length * (size + 8) + 14;
+        ctx.fillStyle = '#2b2410';
+        roundRect(ctx, pad, y, w - pad * 2, bandH, 12);
+        ctx.fill();
+        ctx.fillStyle = '#e0a526';
+        ctx.fillRect(pad, y, 12, bandH);
+        ctx.font = `bold 24px ${FONT}`;
+        ctx.fillText('YOUR TASK', pad + inset, y + 12);
+        y += 44;
+        ctx.font = `bold ${size}px ${FONT}`;
       }
-      y += 6;
+      ctx.fillStyle = '#ffffff';
+      for (const line of lines) {
+        ctx.fillText(line, pad + inset, y);
+        y += size + 8;
+      }
+      y += spec.objective ? 22 : 6;
     }
     const bodySize = spec.bodySize ?? 32;
     const drawLines = (text, { color = '#dbe2ea', size = bodySize, bold = false, bullet = false } = {}) => {
@@ -263,7 +385,6 @@ export class Panel {
 
   drawButton(b) {
     const { ctx } = this;
-    const hovered = this.hover === b.id && b.enabled !== false;
     const variants = {
       primary: ['#1f6fd1', '#ffffff'],
       danger: ['#8f2b2b', '#ffffff'],
@@ -279,15 +400,10 @@ export class Panel {
     ctx.fillStyle = bg;
     roundRect(ctx, b.x, b.y, b.w, b.h, 14);
     ctx.fill();
-    if (hovered) {
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 6;
-      ctx.stroke();
-    } else {
-      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
+    // Hover is an overlay mesh (see setHover), so this never changes on aim.
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
     ctx.fillStyle = fg;
     let size = b.h > 70 ? 30 : 26;
     ctx.font = `600 ${size}px ${FONT}`;
@@ -353,6 +469,6 @@ export class Tag {
     lines.forEach((l, i) => {
       ctx.fillText(l, canvas.width / 2, (canvas.height / (lines.length + 1)) * (i + 1));
     });
-    this.texture.needsUpdate = true;
+    uploadCanvas(this.texture, canvas);
   }
 }

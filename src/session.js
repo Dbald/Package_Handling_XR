@@ -59,6 +59,16 @@ export class Session {
     return r;
   }
 
+  /** Restart Station 1 only (caller swaps in the next order first). */
+  replayPack() {
+    if (this.phase !== 'pack') return null;
+    if (this.pack.phase !== 'setup') this.pack.reset();
+    const r = this.pack.startExercise();
+    this._set('briefing');
+    this._set('pack');
+    return r;
+  }
+
   /** Move to Station 2. `skip` is for demos that start at the dock. */
   toDock({ skip = false } = {}) {
     if (!['setup', 'briefing', 'pack'].includes(this.phase)) return false;

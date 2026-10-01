@@ -1,21 +1,25 @@
 // Station 1 interaction controller: grabbing, drop targets, handheld scanner,
 // tape gun, label printer, displays and local prompts. Every procedural
 // change goes through PackEngine; visuals follow validated results only.
+// Supports several orders (packScenario(i)) for Station 1 replays.
 import * as THREE from 'three';
 import { buildPackStation, PACK_LAYOUT as L } from './scene.js';
-import { PACK_SCENARIO, packWeightRange } from './scenario.js';
+import { PACK_CATALOG, packScenario, packWeightRange } from './scenario.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const v1 = new THREE.Vector3();
+const v2 = new THREE.Vector3();
 export const PACK_BASE = new THREE.Vector3(-3.2, 0, 0);
 
-const ITEM_KEYS = PACK_SCENARIO.itemOrder.map((k) => `pk:${k}`);
+const ALL_ITEM_KEYS = Object.keys(PACK_CATALOG).map((k) => `pk:${k}`);
 const TOOL_KEYS = ['pk:scanner', 'pk:tape'];
+const STAND_Q = new THREE.Quaternion().setFromAxisAngle(UP, Math.PI / 2)
+  .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2));
 
 export class PackStation {
   constructor(app) {
     this.app = app;
-    this.s = PACK_SCENARIO;
+    this.s = app.session.pack.scenario;
     this.w = buildPackStation(this.s);
     this.group = this.w.station;
     this.group.position.x = PACK_BASE.x;
@@ -24,6 +28,8 @@ export class PackStation {
     this.loc = {};
     this.selected = this.s.itemOrder[0];
     this.scanFlash = null;
+    this.tape = { a: 0, b: 0, active: null, lastBuzz: 0 };
+    this.flapK = 0;
     this.reset();
   }
 
@@ -31,7 +37,28 @@ export class PackStation {
     return this.app.session.pack;
   }
 
+  /** Switch to order `index` (engine + visuals). */
+  setOrder(index) {
+    const sc = packScenario(index);
+    // Update local state first: the engine reset triggers a UI refresh.
+    this.s = sc;
+    this.selected = sc.itemOrder[0];
+    this.engine.setScenario(sc);
+    this.w.drawToteLabel(sc.order.tote);
+    this.w.shipLabel.draw(sc);
+    this.reset();
+  }
+
   // ------------------------------------------------------------ registry
+
+  get itemKeys() {
+    return this.s.itemOrder.map((k) => `pk:${k}`);
+  }
+
+  /** The carton currently built (or the one that would be). */
+  get carton() {
+    return this.w.cartons[this.engine.carton ?? this.s.correctCarton];
+  }
 
   objFor(key) {
     const w = this.w;
@@ -39,27 +66,28 @@ export class PackStation {
     if (key === 'pk:tape') return w.tapeGun.group;
     if (key === 'pk:pillow') return w.pillow;
     if (key === 'pk:label') return w.label;
-    if (key === 'pk:box') return w.carton.group;
+    if (key === 'pk:box') return this.carton.group;
     if (key.startsWith('pk:carton-')) return w.flats[key.slice(10)].group;
     return w.items[key.slice(3)]?.group ?? null;
   }
 
   itemKey(key) {
-    return ITEM_KEYS.includes(key) ? key.slice(3) : null;
+    return this.itemKeys.includes(key) ? key.slice(3) : null;
   }
 
   homePose(key) {
     const T = L.tote;
     const q = new THREE.Quaternion();
     const pos = new THREE.Vector3();
+    const item = this.itemKey(key);
+    if (item) {
+      const [dx, y, dz, rot = 0] = this.s.toteSlots[item];
+      pos.set(T.x + dx, y, T.z + dz);
+      q.setFromAxisAngle(UP, rot);
+      return { pos, quat: q };
+    }
     switch (key) {
-      case 'pk:mug': pos.set(T.x - 0.1, 0.02 + 0.06, T.z - 0.04); break;
-      case 'pk:book': pos.set(T.x + 0.07, 0.02 + 0.02, T.z + 0.04); break;
-      case 'pk:case': pos.set(T.x + 0.07, 0.04 + 0.0125 + 0.004, T.z + 0.02); q.setFromAxisAngle(UP, 0.25); break;
-      case 'pk:scanner':
-        pos.set(L.scanner.x, 0.025, L.scanner.z);
-        q.setFromEuler(new THREE.Euler(0, Math.PI / 2, Math.PI / 2, 'YXZ'));
-        break;
+      case 'pk:scanner': pos.set(L.scanner.x, 0.14, L.scanner.z); break; // upright in its cradle
       case 'pk:tape':
         pos.set(L.tape.x, 0.05, L.tape.z);
         q.setFromEuler(new THREE.Euler(0, Math.PI, 0));
@@ -77,14 +105,9 @@ export class PackStation {
   }
 
   cartonSlot(item) {
-    const size = this.w.carton.size;
-    if (item === 'mug') return { pos: new THREE.Vector3(-0.07, 0.006 + 0.06, 0.03), quat: new THREE.Quaternion() };
-    if (item === 'book') {
-      const q = new THREE.Quaternion().setFromAxisAngle(UP, Math.PI / 2)
-        .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2));
-      return { pos: new THREE.Vector3(size[0] / 2 - 0.04, 0.006 + 0.08, 0), quat: q };
-    }
-    return { pos: new THREE.Vector3(0, 0.05, 0), quat: new THREE.Quaternion() };
+    const [x, y, z, rot = 0] = this.s.cartonSlots[item] ?? [0, 0.05, 0];
+    const quat = rot === 'stand' ? STAND_Q.clone() : new THREE.Quaternion().setFromAxisAngle(UP, rot);
+    return { pos: new THREE.Vector3(x, y, z), quat };
   }
 
   exceptionSlot(item) {
@@ -98,7 +121,20 @@ export class PackStation {
     for (const c of this.app.xrInput?.controllers ?? []) {
       if (c.held && c.held.startsWith('pk:')) c.held = null;
     }
-    const keys = [...ITEM_KEYS, ...TOOL_KEYS, 'pk:pillow', 'pk:label', 'pk:box', ...this.s.cartonOrder.map((k) => `pk:carton-${k}`)];
+    for (const key of ALL_ITEM_KEYS) {
+      const obj = this.w.items[key.slice(3)].group;
+      this.app.cancelTweens?.(obj);
+      this.group.attach(obj);
+      obj.visible = false;
+    }
+    for (const c of Object.values(this.w.cartons)) {
+      this.app.cancelTweens?.(c.group);
+      this.group.attach(c.group);
+      c.group.visible = false;
+      c.setFlaps(0);
+      c.setTape(0, 0);
+    }
+    const keys = [...this.itemKeys, ...TOOL_KEYS, 'pk:pillow', 'pk:label', 'pk:box', ...this.s.cartonOrder.map((k) => `pk:carton-${k}`)];
     for (const key of keys) {
       const obj = this.objFor(key);
       this.app.cancelTweens?.(obj);
@@ -109,9 +145,10 @@ export class PackStation {
       obj.visible = true;
       this.loc[key] = 'home';
     }
-    this.w.carton.setSealed(false);
     this.selected = this.s.itemOrder[0];
     this.scanFlash = null;
+    this.tape = { a: 0, b: 0, active: null, lastBuzz: 0 };
+    this.flapK = 0;
     this.sync();
   }
 
@@ -119,10 +156,13 @@ export class PackStation {
   sync() {
     const e = this.engine;
     const w = this.w;
-    w.carton.group.visible = !!e.carton;
-    w.carton.setSealed(e.sealed);
-    w.cartonPillows.forEach((p, i) => { p.visible = i < e.dunnage; });
-    w.appliedLabel.visible = e.labelApplied;
+    for (const [k, c] of Object.entries(w.cartons)) {
+      const built = e.carton === k;
+      c.group.visible = built;
+      c.pillows.forEach((p, i) => { p.visible = built && i < e.dunnage; });
+      c.appliedLabel.visible = built && e.labelApplied;
+      if (built && e.sealed) c.setTape(-c.size[0] / 2 - 0.002, c.size[0] / 2 + 0.002);
+    }
     w.label.visible = e.labelPrinted && !e.labelApplied;
     for (const k of this.s.cartonOrder) {
       w.flats[k].group.visible = !e.carton || this.loc[`pk:carton-${k}`] === 'held';
@@ -142,26 +182,25 @@ export class PackStation {
   pickables() {
     const list = [];
     const add = (obj) => obj.traverse((o) => { if (o.isMesh && o.visible) list.push(o); });
-    for (const key of [...ITEM_KEYS, ...TOOL_KEYS]) {
+    for (const key of [...this.itemKeys, ...TOOL_KEYS]) {
       if (!this.isHeld(key)) add(this.objFor(key));
     }
     list.push(this.w.toteLabel);
     for (const k of this.s.cartonOrder) if (this.w.flats[k].group.visible && !this.isHeld(`pk:carton-${k}`)) add(this.w.flats[k].group);
     if (!this.isHeld('pk:pillow')) add(this.w.pillow);
     if (this.w.label.visible && !this.isHeld('pk:label')) add(this.w.label);
-    if (this.w.carton.group.visible && !this.isHeld('pk:box')) {
-      this.w.carton.group.children.forEach((o) => { if (o.isMesh) list.push(o); });
-    }
+    const box = this.carton.group;
+    if (box.visible && !this.isHeld('pk:box')) box.children.forEach((o) => { if (o.isMesh) list.push(o); });
     list.push(this.w.printer, this.w.wms.mesh, this.w.releaseBtn);
     return list;
   }
 
   grabCandidates() {
     const out = [];
-    for (const key of [...ITEM_KEYS, ...TOOL_KEYS, 'pk:pillow']) out.push([key, this.objFor(key)]);
+    for (const key of [...this.itemKeys, ...TOOL_KEYS, 'pk:pillow']) out.push([key, this.objFor(key)]);
     for (const k of this.s.cartonOrder) if (this.w.flats[k].group.visible) out.push([`pk:carton-${k}`, this.w.flats[k].group]);
     if (this.w.label.visible) out.push(['pk:label', this.w.label]);
-    if (this.w.carton.group.visible) out.push(['pk:box', this.w.carton.group]);
+    if (this.carton.group.visible) out.push(['pk:box', this.carton.group]);
     return out;
   }
 
@@ -171,7 +210,7 @@ export class PackStation {
     for (const k of this.s.cartonOrder) glow(this.w.flats[k].mats, hot.has(`pk:carton-${k}`));
     glow(this.w.scanner.mats, hot.has('pk:scanner'));
     glow(this.w.tapeGun.mats, hot.has('pk:tape'));
-    glow([this.w.carton.mat], hot.has('pk:box'));
+    glow([this.carton.mat], hot.has('pk:box'));
     glow([this.w.printer.material], hot.has('pk:printer'));
     this.w.releaseBtn.material.emissive.setHex(hot.has('release') ? 0x1f5a36 : 0);
   }
@@ -203,7 +242,7 @@ export class PackStation {
     if (this.app.session.phase !== 'pack' || e.phase === 'setup' || e.phase === 'briefing') {
       return { ok: false, message: 'Start Station 1 from the briefing panel first. During setup, practise with the grey box.' };
     }
-    if (e.phase === 'complete') return { ok: false, message: 'Station 1 is complete. Continue to Station 2 from the panel.' };
+    if (e.phase === 'complete') return { ok: false, message: 'Station 1 is complete. Continue to Station 2, or replay Station 1 with a new order.' };
     if (e.isPaused()) return { ok: false, message: 'Training is paused. Select Resume to continue.' };
     return { ok: true };
   }
@@ -249,6 +288,7 @@ export class PackStation {
     const app = this.app;
     const key = c.held;
     c.held = null;
+    if (key === 'pk:tape') this.tape.active = null;
     const obj = this.objFor(key);
     this.group.attach(obj);
     const ctx = { input: 'xr' };
@@ -276,9 +316,7 @@ export class PackStation {
         this.restOrDrop(key, obj);
       }
     } else if (key.startsWith('pk:carton-')) {
-      if (zone === 'carton') {
-        r = this.engine.selectCarton(key.slice(10), ctx);
-      }
+      if (zone === 'carton') r = this.engine.selectCarton(key.slice(10), ctx);
       this.goHome(key);
     } else if (key === 'pk:pillow') {
       if (zone === 'carton') r = this.engine.addDunnage(ctx);
@@ -310,7 +348,7 @@ export class PackStation {
 
   putInCarton(item) {
     const obj = this.objFor(`pk:${item}`);
-    this.w.carton.group.attach(obj);
+    this.carton.group.attach(obj);
     const { pos, quat } = this.cartonSlot(item);
     this.app.tween(obj, { pos, quat, dur: 0.3 });
     this.loc[`pk:${item}`] = 'box';
@@ -326,8 +364,7 @@ export class PackStation {
 
   toConveyor() {
     const C = L.conveyor;
-    const obj = this.w.carton.group;
-    this.app.tween(obj, { pos: new THREE.Vector3(C.x, C.top, C.intakeZ), quat: new THREE.Quaternion(), dur: 0.3 });
+    this.app.tween(this.carton.group, { pos: new THREE.Vector3(C.x, C.top, C.intakeZ), quat: new THREE.Quaternion(), dur: 0.3 });
     this.loc['pk:box'] = 'outbound';
   }
 
@@ -350,22 +387,27 @@ export class PackStation {
   }
 
   floorItems() {
-    return ITEM_KEYS.filter((k) => this.loc[k] === 'floor');
+    return this.itemKeys.filter((k) => this.loc[k] === 'floor');
   }
 
   // ------------------------------------------------------------ tool use
 
-  /** Trigger while holding a tool. Returns true when consumed. */
+  /** Trigger pressed while holding a tool. Returns true when consumed. */
   onTrigger(c) {
     if (c.held === 'pk:scanner') {
       this.handScan(c);
       return true;
     }
     if (c.held === 'pk:tape') {
-      this.handTape(c);
+      this.startTape(c);
       return true;
     }
     return false;
+  }
+
+  /** Trigger released while holding a tool. */
+  onTriggerEnd(c) {
+    if (this.tape.active === c) this.tape.active = null;
   }
 
   scanTargets() {
@@ -377,8 +419,8 @@ export class PackStation {
   /** Ray from the scanner nose; returns {key, item, facing, distance} or null. */
   scannerHit() {
     const gun = this.w.scanner.group;
-    const origin = new THREE.Vector3(0, 0, -0.095).applyMatrix4(gun.matrixWorld);
-    const dir = new THREE.Vector3(0, 0, -1).transformDirection(gun.matrixWorld);
+    const origin = v1.set(0, 0, -0.095).applyMatrix4(gun.matrixWorld);
+    const dir = v2.set(0, 0, -1).transformDirection(gun.matrixWorld);
     this.raycaster.set(origin, dir);
     const hits = this.raycaster.intersectObjects(this.scanTargets(), false);
     for (const h of hits) {
@@ -415,24 +457,67 @@ export class PackStation {
     app.refreshUI();
   }
 
-  handTape(c) {
+  /** Tape-gun nose in carton-local coordinates. */
+  tapeNoseInCarton() {
+    const nose = v1.set(0, -0.04, -0.11).applyMatrix4(this.w.tapeGun.group.matrixWorld);
+    return this.carton.group.worldToLocal(nose);
+  }
+
+  startTape(c) {
     const app = this.app;
     const e = this.engine;
-    const nose = new THREE.Vector3(0, -0.04, -0.11).applyMatrix4(this.w.tapeGun.group.matrixWorld);
-    this.group.worldToLocal(nose);
-    const P = L.packZone;
-    const top = new THREE.Vector3(P.x, P.top + this.w.carton.size[1], P.z);
-    let r;
+    let r = null;
     if (!e.carton || this.loc['pk:box'] !== 'home') {
       r = { tone: 'info', message: 'Build a carton on the pack scale first; then tape it shut there.' };
-    } else if (nose.distanceTo(top) > 0.3) {
-      r = { tone: 'info', message: 'Hold the tape gun over the top of the carton, then pull the trigger.' };
+    } else if (e.sealed) {
+      r = { tone: 'info', message: 'The carton is already sealed.' };
     } else {
-      r = e.seal({ input: 'xr' });
+      const n = this.tapeNoseInCarton();
+      const [w, h] = this.carton.size;
+      if (Math.abs(n.x) > w / 2 + 0.15 || Math.abs(n.z) > 0.2 || n.y < h - 0.08 || n.y > h + 0.25) {
+        r = { tone: 'info', message: 'Hold the tape gun over one end of the carton seam, pull the trigger and draw it across the top.' };
+      } else if (e.sealBlocker()) {
+        // Same validated (and scored) refusal as any other seal attempt.
+        r = e.seal({ input: 'xr' });
+      } else {
+        this.tape.active = c;
+        if (this.tape.b <= this.tape.a) {
+          const x = THREE.MathUtils.clamp(n.x, -w / 2, w / 2);
+          this.tape.a = this.tape.b = x;
+        }
+        app.info('Keep the trigger held and draw the tape gun along the top seam.');
+      }
     }
-    this.sync();
-    app.showResult(r, { controller: c });
+    if (r) app.showResult(r, { controller: c });
     app.refreshUI();
+  }
+
+  /** Per frame while taping: extend the strip under the gun; seal when it spans the carton. */
+  updateTape(now) {
+    const c = this.tape.active;
+    if (!c) return;
+    const carton = this.carton;
+    const [w, h] = carton.size;
+    const n = this.tapeNoseInCarton();
+    if (Math.abs(n.z) < 0.12 && n.y > h - 0.08 && n.y < h + 0.2) {
+      const x = THREE.MathUtils.clamp(n.x, -w / 2 - 0.002, w / 2 + 0.002);
+      const before = this.tape.b - this.tape.a;
+      this.tape.a = Math.min(this.tape.a, x);
+      this.tape.b = Math.max(this.tape.b, x);
+      if (this.tape.b - this.tape.a > before + 0.003 && now - this.tape.lastBuzz > 70) {
+        this.tape.lastBuzz = now;
+        this.app.xrInput.haptic(c, 0.25, 30);
+        this.app.sfx.play('tape');
+      }
+      carton.setTape(this.tape.a, this.tape.b);
+      if (this.tape.b - this.tape.a >= w * 0.85) {
+        this.tape.active = null;
+        const r = this.engine.seal({ input: 'xr' });
+        this.sync();
+        this.app.showResult(r, { controller: c });
+        this.app.refreshUI();
+      }
+    }
   }
 
   // -------------------------------------------------------- panel actions
@@ -502,9 +587,8 @@ export class PackStation {
     const r = this.engine.release(ctx);
     if (r.ok && r.code === 'RELEASED') {
       const C = L.conveyor;
-      const obj = this.w.carton.group;
       this.loc['pk:box'] = 'released';
-      this.app.tween(obj, { pos: new THREE.Vector3(C.x, C.top, C.endZ), quat: new THREE.Quaternion(), dur: 3.2, ease: 'linear' });
+      this.app.tween(this.carton.group, { pos: new THREE.Vector3(C.x, C.top, C.endZ), quat: new THREE.Quaternion(), dur: 3.2, ease: 'linear' });
     }
     return r;
   }
@@ -528,9 +612,34 @@ export class PackStation {
 
   // ---------------------------------------------------------- per frame
 
-  update(now) {
+  /** `slow` (≈10 Hz) gates canvas screens; tools and animation run every frame. */
+  update(now, slow = true) {
     const e = this.engine;
     const w = this.w;
+    // Flaps fold shut as soon as taping starts, and stay shut once sealed.
+    const target = e.sealed || this.tape.b > this.tape.a ? 1 : 0;
+    const dt = Math.min(100, now - (this.lastUpdate ?? now));
+    this.lastUpdate = now;
+    if (this.flapK !== target) {
+      // Time-based (~0.4 s) so it looks the same at any frame rate.
+      const step = dt / 400;
+      this.flapK = this.app.settings.reducedMotion ? target : THREE.MathUtils.clamp(this.flapK + (target ? step : -step), 0, 1);
+      this.carton.setFlaps(this.flapK);
+    }
+    this.updateTape(now);
+    // Scanner beam while held.
+    const beam = w.scanner.group.userData.beam;
+    const held = this.isHeld('pk:scanner');
+    beam.visible = held;
+    if (held) {
+      const hit = this.scannerHit();
+      const len = hit ? hit.distance + 0.01 : 0.6;
+      beam.scale.set(1, len, 1);
+      beam.position.set(0, 0, -0.095 - len / 2);
+      const flash = this.scanFlash && this.scanFlash.until > now ? this.scanFlash : null;
+      beam.material.color.setHex(flash ? (flash.ok ? 0x39d98a : 0xff9b3d) : hit ? 0xff2a2a : 0xff6a6a);
+    }
+    if (!slow) return;
     const { min, max } = packWeightRange(this.s);
     const weight = e.carton && this.loc['pk:box'] === 'home' ? e.measuredWeightKg() : 0;
     w.scaleScreen.show([
@@ -545,11 +654,12 @@ export class PackStation {
       tote: s.order.tote,
       service: s.order.service,
       rows: e.orderItems().map((k) => ({
-        name: s.items[k].name, sku: s.items[k].sku, fragile: s.items[k].fragile,
+        name: s.items[k].name, sku: s.items[k].sku, dims: s.items[k].dims, fragile: s.items[k].fragile,
         scanned: e.items[k].scanned, packed: e.items[k].loc === 'box',
       })),
       exceptions: s.itemOrder.filter((k) => !s.items[k].onOrder && (e.items[k].scanned || e.items[k].loc === 'exception'))
         .map((k) => ({ name: s.items[k].name, sku: s.items[k].sku, state: e.items[k].loc === 'exception' ? 'diverted' : 'flagged' })),
+      recommended: `${s.correctCarton} (${s.cartons[s.correctCarton].inner})`,
       carton: e.carton ? `${e.carton} (${s.cartons[e.carton].inner})` : null,
       weight: (e.carton ? e.measuredWeightKg() : 0).toFixed(2),
       range: `${min.toFixed(2)}–${max.toFixed(2)}`,
@@ -557,18 +667,6 @@ export class PackStation {
       confirmed: e.weightConfirmed,
       label: e.labelApplied ? 'APPLIED' : e.labelPrinted ? 'PRINTED' : '--',
     });
-    // Scanner beam while held.
-    const beam = w.scanner.group.userData.beam;
-    const held = this.isHeld('pk:scanner');
-    beam.visible = held;
-    if (held) {
-      const hit = this.scannerHit();
-      const len = hit ? hit.distance + 0.01 : 0.6;
-      beam.scale.set(1, len, 1);
-      beam.position.set(0, 0, -0.095 - len / 2);
-      const flash = this.scanFlash && this.scanFlash.until > now ? this.scanFlash : null;
-      beam.material.color.setHex(flash ? (flash.ok ? 0x39d98a : 0xff9b3d) : hit ? 0xff2a2a : 0xff6a6a);
-    }
   }
 
   /** Local prompt for the current step (station-frame position + text). */
@@ -578,19 +676,31 @@ export class PackStation {
     const T = L.tote;
     const C = L.conveyor;
     const P = L.packZone;
+    const M = L.monitor;
     const step = e.step();
+    const vr = !!this.app.xr;
     const at = (x, y, z, text) => ({ pos: new THREE.Vector3(x, y, z), text });
+    const top = P.top + this.carton.size[1];
     switch (step) {
-      case 'open': return at(T.x, T.h + 0.1, T.z + T.d / 2, 'SCAN TOTE LABEL');
+      case 'open':
+        return vr && !this.isHeld('pk:scanner')
+          ? at(L.scanner.x, 0.36, L.scanner.z, 'PICK UP SCANNER')
+          : at(T.x, T.h + 0.1, T.z + T.d / 2, 'SCAN TOTE LABEL');
       case 'scan': return at(T.x, 0.3, T.z, 'SCAN EACH ITEM');
       case 'exception': return at(L.exception.x, 0.32, L.exception.z, 'EXCEPTION BIN');
-      case 'carton': return at(L.slots.xs.M, 0.3, L.slots.z, 'CHOOSE CARTON');
+      case 'carton': return at(M.x, M.y + M.h / 2 + 0.16, M.z, 'CHECK CARTON SIZE');
       case 'pack': return at(P.x, 0.4, P.z, 'PACK ITEMS');
       case 'dunnage': return at(L.basket.x, 0.3, L.basket.z, 'VOID FILL');
-      case 'seal': return at(L.tape.x, 0.25, L.tape.z, 'TAPE TO SEAL');
+      case 'seal':
+        return vr && !this.isHeld('pk:tape')
+          ? at(L.tape.x, 0.27, L.tape.z, 'PICK UP TAPE GUN')
+          : at(P.x, top + 0.2, P.z, 'RUN TAPE ALONG THE TOP');
       case 'weigh': return at(P.x - 0.22, 0.12, P.z + P.d / 2 + 0.05, 'READ THE SCALE');
       case 'print': return at(L.printer.x, 0.32, L.printer.z, 'PRINT LABEL');
-      case 'label': return at(L.printer.x, 0.32, L.printer.z, 'APPLY LABEL');
+      case 'label':
+        return this.isHeld('pk:label')
+          ? at(P.x, top + 0.2, P.z, 'PLACE ON TOP')
+          : at(L.printer.x, 0.32, L.printer.z, 'TAKE LABEL');
       case 'outbound': return at(C.x, 0.42, C.intakeZ, 'OUTBOUND');
       case 'release': return at(L.releaseButton.x, 0.24, L.releaseButton.z, 'CONFIRM RELEASE');
       default: return null;
